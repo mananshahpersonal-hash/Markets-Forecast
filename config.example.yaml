@@ -1,0 +1,44 @@
+# Copy this file to  config.yaml  and edit. Anything you leave out falls back
+# to a sensible default. Secrets can also be set as environment variables
+# (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, ANTHROPIC_API_KEY) instead of here.
+
+ticker: "HG=F"            # COMEX copper, USD/lb. Alternatives: "CPER" (ETF), "HGUSD=X"
+
+notify:
+  console: true           # always print to terminal / log
+
+  telegram:               # easiest push-to-phone option (free)
+    enabled: false
+    bot_token: ""         # from @BotFather
+    chat_id: ""           # your numeric chat id (see README)
+
+  email:
+    enabled: false
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    username: "you@gmail.com"
+    password: ""          # use an app password, not your real password
+    to: "you@gmail.com"
+
+anthropic:                # optional smarter news reading via Claude
+  enabled: false
+  api_key: ""             # or set ANTHROPIC_API_KEY env var
+  model: "claude-sonnet-4-6"
+  max_headlines: 12
+
+alerts:
+  event_hours: 24         # alert if a high-impact event is within this many hours
+  news_pressure: 0.45     # alert if |news score| exceeds this (0-1)
+
+model:
+  drift_shrink: 0.15      # 0 = pure random walk; 1 = trust recent momentum fully
+  news_drift_strength: 0.5
+  ewma_lambda: 0.94       # volatility memory (RiskMetrics standard)
+  drift_lookback: 60
+
+news:
+  rss_feeds:
+    - "https://news.google.com/rss/search?q=copper+price+when:2d&hl=en-US&gl=US&ceid=US:en"
+    - "https://news.google.com/rss/search?q=copper+(mine+OR+tariff+OR+China+OR+supply)+when:2d&hl=en-US&gl=US&ceid=US:en"
+    - "https://www.mining.com/tag/copper/feed/"
+  max_items: 40

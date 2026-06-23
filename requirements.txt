@@ -1,0 +1,17 @@
+# --- one-click dashboard + upgraded model: install all of these ---
+streamlit>=1.30          # the click-a-button dashboard
+yfinance>=0.2.40         # price + dollar-index data
+pandas>=2.0
+numpy>=1.24
+matplotlib>=3.7
+PyYAML>=6.0
+feedparser>=6.0          # news headlines
+requests>=2.31
+
+arch>=6.0                # GARCH volatility (auto-fallback to EWMA if absent)
+lightgbm>=4.0            # the M5-winning method (auto-skipped if absent)
+
+schedule>=1.2            # only needed for the hourly background runner (--loop)
+
+# Optional: smarter LLM news reading (set anthropic.enabled: true in config)
+# anthropic>=0.40
