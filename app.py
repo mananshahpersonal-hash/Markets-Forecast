@@ -45,7 +45,8 @@ METAL_META = {"copper": ("Copper", "🟠"), "gold": ("Gold", "🟡"),
 
 # ----------------------------------------------------------- mode + picker ---
 mode = st.radio("What do you want to forecast?",
-                ["Metals", "Stocks", "Overview (all at once)"], horizontal=True)
+                ["Metals", "Stocks", "Overview (all at once)",
+                 "Top & Bottom (scan)"], horizontal=True)
 
 # ===================== 📊 OVERVIEW — all metals + your stocks at a glance ====
 if mode == "Overview (all at once)":
@@ -106,6 +107,86 @@ if mode == "Overview (all at once)":
                "(no news or backtest — those are in the full Metals/Stocks view). "
                "Sorted by odds of going up. Short-horizon direction is near "
                "50/50; this is a scan, **not financial advice**.")
+    st.stop()
+
+# ===================== 🏆 TOP & BOTTOM — ranked market scan ==================
+if mode == "Top & Bottom (scan)":
+    st.title("🏆 Top & Bottom — the market ranked right now")
+    st.caption("Runs every metal + a basket of big stocks through the model and "
+               "ranks them: strongest **bullish lean** up top, strongest "
+               "**bearish lean** at the bottom. These are the model's leans and "
+               "odds — **not facts, not guarantees.** The scan's own measured "
+               "hit-rate is shown below, and it learns from every run.")
+    default_stocks = ", ".join(mp.DEFAULT_SCAN_STOCKS)
+    tickers_str = st.text_area("Stocks in the scan (comma-separated — edit freely)",
+                               value=default_stocks, height=90)
+    go = st.button("🔍  Run market scan", type="primary", use_container_width=True)
+    skey = "SCAN:" + tickers_str
+    if go or st.session_state.get("scan_key") != skey or "scan" not in st.session_state:
+        cfg = cf.load_config(str(cf.HERE / "config.yaml"))
+        stocks = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
+        prog = st.progress(0.0, text="Scanning the market… (this takes a minute)")
+
+        def _cb(frac, label):
+            try:
+                prog.progress(min(frac, 1.0), text=f"Reading {label}…")
+            except Exception:
+                pass
+        st.session_state["scan"] = mp.market_scan(cfg, stocks, progress=_cb)
+        st.session_state["scan_key"] = skey
+        prog.empty()
+    sc = st.session_state["scan"]
+
+    if sc["acc"] is not None:
+        st.metric("Scan track record — direction right", f"{sc['acc']*100:.0f}%",
+                  f"{sc['graded']} calls graded")
+        st.caption("How often the scan's past up/down calls have actually been "
+                   "correct. Expect it near 50% — that's the honest reality. Read "
+                   "the ranking as *relative* strength, not certainty.")
+    else:
+        st.info("First scan — these calls are now logged and get graded over the "
+                "next week. The scan's real accuracy will show up here as they come "
+                "due, and it updates itself every run.")
+
+    def _row(r, i):
+        em = {"BUY": "🟢", "SELL": "🔴", "HOLD": "⚪"}.get(r["lean"], "")
+        return {"#": i, "Asset": r["name"], "Price": f"${fmtp(r['spot'])}",
+                "Lean": f"{em} {r['lean']}", "Conviction": r["conv"],
+                "Odds ↑": f"{r['p_up']*100:.0f}%", "~1-wk": f"{r['move_pct']:+.1f}%",
+                "Ind": f"{r['ind_bull']}▲/{r['ind_bear']}▼"}
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 🟢 Top 10 — most bullish lean")
+        if sc["top"]:
+            st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sc["top"])]
+                                  ).set_index("#"))
+    with c2:
+        st.markdown("#### 🔴 Bottom 10 — most bearish lean")
+        if sc["bottom"]:
+            st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sc["bottom"])]
+                                  ).set_index("#"))
+
+    strong = [r for r in sc["all"] if r["strength"] >= 2]
+    if not strong:
+        st.warning("Heads-up: **nothing in the scan has strong conviction right "
+                   "now.** These are the *relative* leaders and laggards, but the "
+                   "edges are thin — which matches what you're seeing: no clean "
+                   "buys or sells. Often the honest move is to wait.")
+    else:
+        b = [r["name"] for r in strong if r["lean"] == "BUY"]
+        s = [r["name"] for r in strong if r["lean"] == "SELL"]
+        if b:
+            st.markdown("**Stronger bullish leans:** " + ", ".join(b))
+        if s:
+            st.markdown("**Stronger bearish leans:** " + ", ".join(s))
+    if sc["errors"]:
+        st.caption("No data this run for: " + ", ".join(sc["errors"]) +
+                   " — Yahoo can rate-limit a big scan; try again in a minute.")
+    st.caption("Ranked by the model's weekly lean on daily data. Leans and odds, "
+               "**not advice and not certainty** — short-horizon direction is near "
+               "a coin flip, as the track record shows. Open Metals or Stocks for "
+               "the full plan (entry/target/stop) on any name.")
     st.stop()
 
 asset_key = stock_ticker = None
@@ -392,6 +473,59 @@ border-radius:8px;padding:14px 18px;">
     st.caption("When to get back in: after a stop-out or once the timeframe "
                "passes, run a fresh update — only re-enter if it still leans your "
                "way **and** price is back near the entry.")
+
+    # --- position sizer: how many shares/contracts fit your risk budget? ---
+    st.markdown("**📐 Position size — size the trade to your risk (optional)**")
+    pa, pb = st.columns(2)
+    with pa:
+        acct = st.number_input("Your account size ($)", min_value=0.0,
+                               value=10000.0, step=500.0, key=f"acct_{load_key}")
+    with pb:
+        riskpct = st.number_input("Max % of account to risk on this trade",
+                                  min_value=0.1, max_value=100.0, value=1.0,
+                                  step=0.5, key=f"risk_{load_key}")
+    budget = acct * riskpct / 100.0
+    rpu = abs(plan["entry"] - plan["stop"])          # risk per unit (price distance)
+    if rpu > 0 and budget > 0:
+        if res["kind"] == "stock":
+            shares = int(budget // rpu)
+            if shares == 0:
+                st.warning(f"Even **1 share** risks ${rpu:,.2f} to the stop — more "
+                           f"than your ${budget:,.0f} budget. This trade is too big "
+                           f"for that risk limit; lower the size or skip.")
+            else:
+                notional = shares * plan["entry"]
+                afford = int(acct // plan["entry"]) if plan["entry"] > 0 else 0
+                use, note = shares, ""
+                if notional > acct:
+                    use = min(shares, afford)
+                    note = (f" (risk math allows {shares}, but that needs "
+                            f"${notional:,.0f}; capped to {afford} to stay "
+                            f"unleveraged within your ${acct:,.0f})")
+                st.info(f"➡️ About **{use} shares** (~${use*plan['entry']:,.0f}). "
+                        f"If the stop hits, you lose roughly **${use*rpu:,.0f}** — "
+                        f"~{use*rpu/acct*100:.1f}% of your account.{note}")
+        else:
+            cs = res.get("contract_size", 1)
+            unitname = res["unit"].split("/")[-1]
+            rpc = rpu * cs                            # risk per futures contract
+            contracts = int(budget // rpc)
+            if contracts == 0:
+                st.warning(f"Even **1 contract** risks ~${rpc:,.0f} to the stop "
+                           f"(it controls {cs:,} {unitname} of {name}) — more than "
+                           f"your ${budget:,.0f} budget. This futures trade is too "
+                           f"big for that risk limit; skip it or you're over-risking.")
+            else:
+                notional = contracts * plan["entry"] * cs
+                st.info(f"➡️ About **{contracts} contract(s)** "
+                        f"({res['contract_label']}). If the stop hits, you lose "
+                        f"roughly **${contracts*rpc:,.0f}** "
+                        f"(~{contracts*rpc/acct*100:.1f}% of your account). "
+                        f"⚠️ Exposure is ~${notional:,.0f} of {name} — futures are "
+                        f"leveraged, and a gap past your stop can lose more.")
+    st.caption("Sizing caps your loss *if* the stop fills at that price — gaps and "
+               "slippage can exceed it. A common rule is risking 1–2% per trade. "
+               "Not advice.")
 
 if res.get("dir_tot", 0) >= 10 and res.get("dir_acc") is not None and res["dir_acc"] < 0.5:
     st.caption(f"⚠️ Reality check: on {name}, the model's directional calls have "

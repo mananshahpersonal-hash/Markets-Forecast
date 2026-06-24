@@ -1070,22 +1070,14 @@ HORIZONS = [
 ]
 
 
-def quick_read(cfg: dict, asset_key: str = None,
-               stock_ticker: str = None) -> dict:
-    """Fast, lightweight read for the overview page: price, a weekly directional
-    lean + odds, and the indicator tally — on daily data only. Skips news,
-    backtests, strategy sims and persistence so many assets load quickly."""
-    profile = assets.resolve(asset_key, stock_ticker)
-    base = {"name": profile["name"], "ticker": profile["ticker"],
-            "kind": profile["kind"], "unit": profile["unit"]}
-    try:
-        df = cf.yf.download(profile["ticker"], period="2y", interval="1d",
-                            auto_adjust=False, progress=False)
-        daily = cf._close_series(df)
-    except Exception:
-        return {**base, "error": "no data"}
-    if daily is None or len(daily) < 60:
-        return {**base, "error": "thin data"}
+DEFAULT_SCAN_STOCKS = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+                       "AMD", "NFLX", "JPM", "V", "WMT", "XOM", "JNJ", "PG", "KO",
+                       "DIS", "BA", "CAT", "GE", "INTC", "PFE", "NKE", "BAC"]
+
+
+def _read_from_daily(cfg: dict, profile: dict, daily) -> dict:
+    """Compute a lightweight read (price, weekly lean + odds, indicator-based
+    conviction) from an already-fetched daily series. No network, no persistence."""
     lam = cfg["model"]["ewma_lambda"]
     log_d = np.log(daily)
     ret = log_d.diff().dropna()
@@ -1100,16 +1092,168 @@ def quick_read(cfg: dict, asset_key: str = None,
     spot = float(daily.iloc[-1])
     ind = indicators.compute_indicators(daily)
     isig = {it["key"]: it["signal"] for it in ind["list"]}
-    lean = ("BUY" if (z > 0.5 and p_up > 0.55) else
-            "SELL" if (z < -0.5 and p_up < 0.45) else "HOLD")
-    # mini overextension brake: don't flag a chase into a stretched move
-    if lean == "BUY" and (isig.get("rsi", 0) < 0 or isig.get("boll", 0) < 0):
+    sign = 1 if z > 0 else -1 if z < 0 else 0
+    agree = sum(1 for it in ind["list"] if it["signal"] == sign) if sign else 0
+    overext_up = isig.get("rsi", 0) < 0 or isig.get("boll", 0) < 0
+    overext_down = isig.get("rsi", 0) > 0 or isig.get("boll", 0) > 0
+    az = abs(z)
+    strength = 3 if az > 1.2 else 2 if az > 0.8 else 1 if az > 0.4 else 0
+    if strength >= 2 and agree < 2:          # need indicator backing for high conviction
+        strength = 1
+    if (z > 0 and overext_up) or (z < 0 and overext_down):   # overextension brake
+        strength = max(0, strength - 1)
+    lean = ("BUY" if (z > 0.4 and p_up > 0.53) else
+            "SELL" if (z < -0.4 and p_up < 0.47) else "HOLD")
+    if strength == 0:
         lean = "HOLD"
-    if lean == "SELL" and (isig.get("rsi", 0) > 0 or isig.get("boll", 0) > 0):
-        lean = "HOLD"
-    return {**base, "spot": spot, "move_pct": move_pct, "p_up": p_up,
-            "lean": lean, "ind_bull": ind["bull"], "ind_bear": ind["bear"],
-            "rsi": ind.get("rsi")}
+    conv = {0: "\u2014", 1: "weak", 2: "moderate", 3: "strong"}[strength]
+    return {"name": profile["name"], "ticker": profile["ticker"],
+            "kind": profile["kind"], "unit": profile["unit"], "spot": spot,
+            "move_pct": move_pct, "p_up": p_up, "z": z, "lean": lean,
+            "strength": strength, "conv": conv, "ind_bull": ind["bull"],
+            "ind_bear": ind["bear"], "rsi": ind.get("rsi")}
+
+
+def quick_read(cfg: dict, asset_key: str = None,
+               stock_ticker: str = None) -> dict:
+    """Fast read for the overview: fetch daily, then compute the lean. Returns
+    {..., 'error': reason} on any data problem so the caller can show a blank row."""
+    profile = assets.resolve(asset_key, stock_ticker)
+    base = {"name": profile["name"], "ticker": profile["ticker"],
+            "kind": profile["kind"], "unit": profile["unit"]}
+    try:
+        df = cf.yf.download(profile["ticker"], period="2y", interval="1d",
+                            auto_adjust=False, progress=False)
+        daily = cf._close_series(df)
+    except Exception:
+        return {**base, "error": "no data"}
+    if daily is None or len(daily) < 60:
+        return {**base, "error": "thin data"}
+    return _read_from_daily(cfg, profile, daily)
+
+
+# ---- market scan: rank a whole universe, and grade its own past calls --------
+def _scan_log():
+    return STATE_DIR / "scan_signals.csv"
+
+
+def _scan_scores_path():
+    return STATE_DIR / "scan_scores.json"
+
+_SCAN_FIELDS = ["run_time", "target_time", "key", "name", "anchor", "lean"]
+
+
+def _load_scan_scores() -> dict:
+    p = _scan_scores_path()
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {"graded": 0, "correct": 0, "per": {}}
+
+
+def market_scan(cfg: dict, stock_tickers=None, progress=None) -> dict:
+    """Read every metal + stock, rank by weekly lean, and (self-learning) grade
+    the prior scan's calls that have come due, accumulating a scan hit-rate.
+    Persists via the gist when configured. Ranks/odds, NOT facts."""
+    storage.pull("scan")
+    metals = ["copper", "gold", "silver", "aluminium"]
+    stocks = stock_tickers if stock_tickers is not None else DEFAULT_SCAN_STOCKS
+    scores = _load_scan_scores()
+    lp = _scan_log()
+    pending = []
+    if lp.exists():
+        try:
+            pending = list(csv.DictReader(open(lp)))
+        except Exception:
+            pending = []
+    now = dt.datetime.utcnow().replace(microsecond=0)
+    items, errors = [], []
+    keys = [("metal", m) for m in metals] + [("stock", t) for t in stocks]
+    remaining = list(pending)
+    total = max(len(keys), 1)
+    done = 0
+    for kind, key in keys:
+        prof = assets.resolve(key if kind == "metal" else None,
+                              key if kind == "stock" else None)
+        sk = prof["state_key"]
+        try:
+            df = cf.yf.download(prof["ticker"], period="2y", interval="1d",
+                                auto_adjust=False, progress=False)
+            daily = cf._close_series(df)
+        except Exception:
+            daily = None
+        done += 1
+        if progress:
+            progress(done / total, prof["name"])
+        if daily is None or len(daily) < 60:
+            errors.append(prof["name"])
+            continue
+        d = daily.dropna()
+        d.index = pd.DatetimeIndex(d.index)
+        # grade this asset's due scan calls
+        still = []
+        for r in remaining:
+            if r.get("key") != sk:
+                still.append(r)
+                continue
+            try:
+                tt = pd.to_datetime(r["target_time"])
+            except Exception:
+                continue
+            if tt > pd.Timestamp(now):
+                still.append(r)
+                continue
+            after = d[d.index >= tt]
+            if after.empty:
+                still.append(r)
+                continue
+            actual = float(after.iloc[0])
+            anchor = float(r["anchor"])
+            lean = r.get("lean", "HOLD")
+            if lean in ("BUY", "SELL"):
+                correct = int((actual > anchor and lean == "BUY") or
+                              (actual < anchor and lean == "SELL"))
+                scores["graded"] += 1
+                scores["correct"] += correct
+                pk = scores["per"].setdefault(sk, {"graded": 0, "correct": 0,
+                                                   "name": r.get("name", sk)})
+                pk["graded"] += 1
+                pk["correct"] += correct
+        remaining = still
+        rd = _read_from_daily(cfg, prof, daily)
+        items.append(rd)
+        # log today's lean (deduped to ~once per 12h per asset)
+        recent = False
+        for r in remaining:
+            if r.get("key") == sk and r.get("run_time"):
+                try:
+                    if (pd.Timestamp(now) - pd.to_datetime(r["run_time"])) < pd.Timedelta(hours=12):
+                        recent = True
+                        break
+                except Exception:
+                    pass
+        if not recent:
+            remaining.append({"run_time": now.isoformat(),
+                              "target_time": (now + dt.timedelta(days=7)).isoformat(),
+                              "key": sk, "name": rd["name"],
+                              "anchor": f"{rd['spot']:.5f}", "lean": rd["lean"]})
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(lp, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=_SCAN_FIELDS)
+        w.writeheader()
+        for r in remaining:
+            w.writerow({k: r.get(k, "") for k in _SCAN_FIELDS})
+    _scan_scores_path().write_text(json.dumps(scores, indent=2))
+    storage.push("scan")
+    valid = [r for r in items if "z" in r]
+    top = sorted(valid, key=lambda r: r["z"], reverse=True)[:10]
+    bottom = sorted(valid, key=lambda r: r["z"])[:10]
+    g = scores["graded"]
+    return {"top": top, "bottom": bottom, "all": valid, "errors": errors,
+            "graded": g, "correct": scores["correct"],
+            "acc": (scores["correct"] / g) if g else None, "asof": now}
 
 
 def trade_plan(hf, spot: float, signal: dict) -> dict:
@@ -1301,6 +1445,7 @@ def run_prediction(cfg: dict, asset_key: str = "copper",
         "asset_key": asset_key, "asset_name": profile["name"],
         "kind": profile["kind"], "state_key": state_key,
         "unit": profile["unit"], "contract_label": profile["contract_label"],
+        "contract_size": profile["contract_size"],
         "drivers_up": profile["drivers_up"], "drivers_down": profile["drivers_down"],
         "ref_beta": ref_beta, "ref_label": profile["ref_label"],
         "daily": daily, "hourly": hourly if have_hourly else daily,
