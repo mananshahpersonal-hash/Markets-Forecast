@@ -3,3 +3,4 @@ otto-and-mango-app
 e2e_tests/playwright-report
 e2e_tests/test-results
 test-results
+test_report.*
