@@ -50,7 +50,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v8 · 2026-08-22 · broad index scan (Nasdaq-100 · Dow · S&P 100)"
+BUILD = "v9 · 2026-08-22 · Strong-only buy/sell filter across a broad universe"
 
 warnings.filterwarnings("ignore")
 

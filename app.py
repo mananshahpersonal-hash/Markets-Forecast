@@ -213,36 +213,69 @@ if mode == "Top & Bottom (scan)":
                 "Odds ↑": f"{r['p_up']*100:.0f}%", "~1-wk": f"{r['move_pct']:+.1f}%",
                 "Ind": f"{r['ind_bull']}▲/{r['ind_bear']}▼"}
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("#### 🟢 Strongest BUY leans (top 10)")
-        if sc["top"]:
-            st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sc["top"])]
-                                  ).set_index("#"))
-    with c2:
-        st.markdown("#### 🔴 Strongest SELL leans (top 10)")
-        if sc["bottom"]:
-            st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sc["bottom"])]
-                                  ).set_index("#"))
-    st.caption("These are the 10 leaning **up** the most and the 10 leaning **down** "
-               "the most, out of everything scanned — ranked even when the lean is "
-               "small. Check the **Conviction** column: *strong/moderate* is a real "
-               "signal; *weak* or *—* is close to a coin toss.")
+    strong_only = st.toggle(
+        "⭐ Show only STRONG buys & sells (hide the coin-flips)", value=False,
+        help="Keeps only names with a real signal (moderate conviction or stronger). "
+             "This list is often short — sometimes empty — and that's the honest answer.")
 
-    strong = [r for r in sc["all"] if r["strength"] >= 2]
-    if not strong:
-        st.warning("⚠️ **Honest heads-up: nothing is a *strong* buy or sell right "
-                   "now.** The names above are the *relative* leaders and laggards, "
-                   "but the edges are thin — no clean, high-confidence trades today. "
-                   "Forcing a trade here is exactly how people lose. Often the smart "
-                   "move is to wait for a clearer setup.")
+    if strong_only:
+        buys = sorted([r for r in sc["all"] if r["strength"] >= 2 and r["lean"] == "BUY"],
+                      key=lambda r: r["z"], reverse=True)
+        sells = sorted([r for r in sc["all"] if r["strength"] >= 2 and r["lean"] == "SELL"],
+                       key=lambda r: r["z"])
+        b1, b2 = st.columns(2)
+        with b1:
+            st.markdown("#### 🟢 Strong BUYs")
+            if buys:
+                st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(buys)]
+                                      ).set_index("#"))
+            else:
+                st.info("**No strong buys right now.** Nothing crossed the bar — the "
+                        "market isn't handing out clear buy signals today. That's "
+                        "normal; strong setups are rare.")
+        with b2:
+            st.markdown("#### 🔴 Strong SELLs")
+            if sells:
+                st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sells)]
+                                      ).set_index("#"))
+            else:
+                st.info("**No strong sells right now.** Nothing crossed the bar today.")
+        st.caption(f"Filtered from **{sc.get('n_scanned', 0)}** names — only those "
+                   f"with a real signal (moderate conviction or stronger) are shown. "
+                   f"Everything weaker is hidden. Still **odds, not certainty** — "
+                   f"use a stop and size small.")
     else:
-        b = [r["name"] for r in strong if r["lean"] == "BUY"]
-        s = [r["name"] for r in strong if r["lean"] == "SELL"]
-        if b:
-            st.success("🟢 **Actually-strong BUY signals right now:** " + ", ".join(b))
-        if s:
-            st.error("🔴 **Actually-strong SELL signals right now:** " + ", ".join(s))
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("#### 🟢 Strongest BUY leans (top 10)")
+            if sc["top"]:
+                st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sc["top"])]
+                                      ).set_index("#"))
+        with c2:
+            st.markdown("#### 🔴 Strongest SELL leans (top 10)")
+            if sc["bottom"]:
+                st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sc["bottom"])]
+                                      ).set_index("#"))
+        st.caption("These are the 10 leaning **up** the most and the 10 leaning "
+                   "**down** the most, out of everything scanned — ranked even when "
+                   "the lean is small. Check the **Conviction** column: "
+                   "*strong/moderate* is a real signal; *weak* or *—* is a coin toss. "
+                   "Want just the real ones? Flip the **⭐ strong only** switch above.")
+
+        strong = [r for r in sc["all"] if r["strength"] >= 2]
+        if not strong:
+            st.warning("⚠️ **Honest heads-up: nothing is a *strong* buy or sell right "
+                       "now.** The names above are the *relative* leaders and "
+                       "laggards, but the edges are thin — no clean, high-confidence "
+                       "trades today. Forcing a trade here is how people lose. Often "
+                       "the smart move is to wait for a clearer setup.")
+        else:
+            b = [r["name"] for r in strong if r["lean"] == "BUY"]
+            s = [r["name"] for r in strong if r["lean"] == "SELL"]
+            if b:
+                st.success("🟢 **Actually-strong BUY signals right now:** " + ", ".join(b))
+            if s:
+                st.error("🔴 **Actually-strong SELL signals right now:** " + ", ".join(s))
     if sc["errors"]:
         st.caption("No data this run for: " + ", ".join(sc["errors"]) +
                    " — Yahoo can rate-limit a big scan; try again in a minute.")
