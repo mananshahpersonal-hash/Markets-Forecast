@@ -579,6 +579,18 @@ if simple:
         st.markdown(f"{emoji} Lately it was right **{right} out of {total}** times.  "
                     f"**Reward score: {score:+d}** (+1 per right call, −1 per wrong).")
         st.caption(trust)
+        with st.expander("🔧 The engine was just improved — reset this score?"):
+            st.markdown("The old score came from an earlier version that leaned too "
+                        "hard on 'it'll bounce back' and got beaten by trends. The "
+                        "engine now follows trends instead of fighting them. You can "
+                        "wipe the old track record so the **new** engine is measured "
+                        "fresh from today.")
+            if st.button("♻️ Reset the score for " + name, key=f"reset_{load_key}"):
+                mp.reset_learning(res["state_key"])
+                st.session_state.pop("result", None)
+                st.success("Score reset. It starts keeping fresh score from the next "
+                           "predictions. Tap 'Update prediction now' above.")
+                st.stop()
 
     st.info("👉 Want the **strongest buys and sells across many stocks**? Tap "
             "**Top & Bottom (scan)** at the top — it ranks everything so you can see "

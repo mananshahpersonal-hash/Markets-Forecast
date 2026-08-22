@@ -50,7 +50,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v9 · 2026-08-22 · Strong-only buy/sell filter across a broad universe"
+BUILD = "v10 · 2026-08-22 · trend-aware engine (stops fighting trends) + score reset"
 
 warnings.filterwarnings("ignore")
 
@@ -175,6 +175,20 @@ def momentum_drift(log_ret: pd.Series, sigma: float, span: int = 20,
     return float(np.clip(mom, -sigma, sigma))
 
 
+def trend_drift(log_price: pd.Series, sigma: float, lookback: int = 63,
+                scale: float = 0.35) -> tuple[float, float]:
+    """Time-series momentum (the signal with the strongest academic support in
+    commodities/equities): follow the medium-term trend. Returns (per-period
+    drift in the trend direction, a regime-strength score in [-1, 1])."""
+    lp = log_price.dropna()
+    if len(lp) < lookback + 5:
+        return 0.0, 0.0
+    avg_daily = float((lp.iloc[-1] - lp.iloc[-lookback]) / lookback)   # avg daily log-return
+    strength = float(np.tanh(avg_daily / (sigma + 1e-9)))             # how strong/steady
+    drift = avg_daily * scale
+    return float(np.clip(drift, -1.5 * sigma, 1.5 * sigma)), strength
+
+
 def dollar_drift(copper_ret: pd.Series, dxy_ret: pd.Series, sigma: float,
                  lookback: int = 20) -> tuple[float, float]:
     """(per-period copper drift implied by the recent dollar trend, beta).
@@ -248,8 +262,9 @@ def lgbm_drift(log_price: pd.Series, dxy: Optional[pd.Series],
 
 
 DEFAULT_WEIGHTS = {
-    "reversion": 0.55,
-    "momentum": 0.15,
+    "reversion": 0.35,     # was 0.55 — it was fighting trends and getting run over
+    "momentum": 0.20,
+    "trend": 0.45,         # NEW: follow the medium-term trend (best academic support)
     "dollar": 0.30,
     "news": 0.50,
     "lgbm": 0.40,
@@ -265,6 +280,11 @@ def ensemble_per_period_drift(
     dret = np.log(dxy / dxy.shift(1)) if (dxy is not None and not dxy.empty) else None
     rev = ar1_reversion_drift(log_price, sigma)
     mom = momentum_drift(log_ret, sigma)
+    tr, trend_str = trend_drift(log_price, sigma)
+    # REGIME GUARD: don't let mean-reversion bet against a strong prevailing trend.
+    # If reversion points opposite the trend and the trend is strong, shrink it.
+    if trend_str != 0 and rev != 0 and (np.sign(rev) != np.sign(trend_str)):
+        rev *= max(0.15, 1.0 - 0.85 * abs(trend_str))
     dol, beta = dollar_drift(log_ret, dret, sigma) if dret is not None else (0.0, 0.0)
     news = cf.DEFAULT_CONFIG["model"]["news_drift_strength"] * news_score * sigma * news_decay
     lgb_d = lgbm_drift(log_price, dxy, sigma) if use_lgbm else None
@@ -272,6 +292,7 @@ def ensemble_per_period_drift(
     parts = {
         "reversion": weights["reversion"] * rev,
         "momentum": weights["momentum"] * mom,
+        "trend": weights.get("trend", 0.45) * tr,
         "dollar": weights["dollar"] * dol,
         "news": weights["news"] * news,
     }
@@ -280,7 +301,8 @@ def ensemble_per_period_drift(
     total = float(sum(parts.values()))
     total = float(np.clip(total, -2.5 * sigma, 2.5 * sigma))  # safety
     parts["_beta_dollar"] = beta
-    parts["_raw"] = {"reversion": rev, "momentum": mom, "dollar": dol,
+    parts["_trend_strength"] = trend_str
+    parts["_raw"] = {"reversion": rev, "momentum": mom, "trend": tr, "dollar": dol,
                      "news": news, "lgbm": lgb_d}
     return total, parts
 
@@ -1008,8 +1030,10 @@ def evaluate_due(asset: str, daily: pd.Series, hourly: pd.Series,
     diracc = (calib["dir_ok"] / calib["dir_tot"]) if calib["dir_tot"] else None
     mean_errpd = calib["errpd_sum"] / n
     old_bias, old_vol = calib["bias_per_day"], calib["vol_calib"]
-    # nudge future drift to correct a systematic over/under-prediction
-    calib["bias_per_day"] = float(max(-0.0025, min(0.0025, mean_errpd * 0.5)))
+    # nudge future drift to correct a systematic over/under-prediction.
+    # stronger + wider cap than before, so a persistent directional bias (e.g. the
+    # model leaning up while the market falls) gets corrected faster.
+    calib["bias_per_day"] = float(max(-0.004, min(0.004, mean_errpd * 0.7)))
     # nudge band width toward proper 68% coverage
     if cov68 < 0.60:
         calib["vol_calib"] = min(1.6, calib["vol_calib"] * 1.04)
@@ -1087,8 +1111,13 @@ def _read_from_daily(cfg: dict, profile: dict, daily) -> dict:
     log_d = np.log(daily)
     ret = log_d.diff().dropna()
     sigma = cf.ewma_vol(ret, lam)
-    drift = (ar1_reversion_drift(log_d, sigma) * DEFAULT_WEIGHTS["reversion"]
-             + momentum_drift(ret, sigma) * DEFAULT_WEIGHTS["momentum"])
+    rev = ar1_reversion_drift(log_d, sigma)
+    mom = momentum_drift(ret, sigma)
+    tr, trend_str = trend_drift(log_d, sigma)
+    if trend_str != 0 and rev != 0 and (np.sign(rev) != np.sign(trend_str)):
+        rev *= max(0.15, 1.0 - 0.85 * abs(trend_str))     # don't fight strong trends
+    drift = (rev * DEFAULT_WEIGHTS["reversion"] + mom * DEFAULT_WEIGHTS["momentum"]
+             + tr * DEFAULT_WEIGHTS["trend"])
     cum = drift * 5.0
     vol_h = sigma * math.sqrt(5.0)
     z = cum / vol_h if vol_h > 1e-9 else 0.0
@@ -1448,6 +1477,22 @@ def apply_screen(rows: list, screen: str) -> list:
         res = [r for r in v if ytd(r) >= 15 and r.get("above200") and liq(r)]
         res.sort(key=lambda r: ytd(r), reverse=True)
     return res
+
+
+def reset_learning(state_key: str) -> None:
+    """Wipe an asset's learning history (calibration + logged/graded predictions)
+    so the score starts fresh — used after a model change so old mistakes from the
+    old logic don't drag the new model's track record forever."""
+    for p in (_calib_path(state_key), _pred_log(state_key), _eval_log(state_key)):
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+    try:
+        storage.push(state_key)
+    except Exception:
+        pass
 
 
 def trade_plan(hf, spot: float, signal: dict) -> dict:
