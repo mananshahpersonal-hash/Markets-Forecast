@@ -1554,6 +1554,7 @@ def run_prediction(cfg: dict, asset_key: str = "copper",
 
     return {
         "now": now, "spot": spot, "ticker": profile["ticker"],
+        "prev_close": (float(daily.iloc[-2]) if len(daily) >= 2 else None),
         "asset_key": asset_key, "asset_name": profile["name"],
         "kind": profile["kind"], "state_key": state_key,
         "unit": profile["unit"], "contract_label": profile["contract_label"],

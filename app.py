@@ -199,29 +199,34 @@ if mode == "Top & Bottom (scan)":
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("#### 🟢 Top 10 — most bullish lean")
+        st.markdown("#### 🟢 Strongest BUY leans (top 10)")
         if sc["top"]:
             st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sc["top"])]
                                   ).set_index("#"))
     with c2:
-        st.markdown("#### 🔴 Bottom 10 — most bearish lean")
+        st.markdown("#### 🔴 Strongest SELL leans (top 10)")
         if sc["bottom"]:
             st.table(pd.DataFrame([_row(r, i + 1) for i, r in enumerate(sc["bottom"])]
                                   ).set_index("#"))
+    st.caption("These are the 10 leaning **up** the most and the 10 leaning **down** "
+               "the most, out of everything scanned — ranked even when the lean is "
+               "small. Check the **Conviction** column: *strong/moderate* is a real "
+               "signal; *weak* or *—* is close to a coin toss.")
 
     strong = [r for r in sc["all"] if r["strength"] >= 2]
     if not strong:
-        st.warning("Heads-up: **nothing in the scan has strong conviction right "
-                   "now.** These are the *relative* leaders and laggards, but the "
-                   "edges are thin — which matches what you're seeing: no clean "
-                   "buys or sells. Often the honest move is to wait.")
+        st.warning("⚠️ **Honest heads-up: nothing is a *strong* buy or sell right "
+                   "now.** The names above are the *relative* leaders and laggards, "
+                   "but the edges are thin — no clean, high-confidence trades today. "
+                   "Forcing a trade here is exactly how people lose. Often the smart "
+                   "move is to wait for a clearer setup.")
     else:
         b = [r["name"] for r in strong if r["lean"] == "BUY"]
         s = [r["name"] for r in strong if r["lean"] == "SELL"]
         if b:
-            st.markdown("**Stronger bullish leans:** " + ", ".join(b))
+            st.success("🟢 **Actually-strong BUY signals right now:** " + ", ".join(b))
         if s:
-            st.markdown("**Stronger bearish leans:** " + ", ".join(s))
+            st.error("🔴 **Actually-strong SELL signals right now:** " + ", ".join(s))
     if sc["errors"]:
         st.caption("No data this run for: " + ", ".join(sc["errors"]) +
                    " — Yahoo can rate-limit a big scan; try again in a minute.")
@@ -418,65 +423,120 @@ simple = st.toggle("🟢 Simple view (plain words)", value=True,
                    help="Turn this OFF to see all the charts, indicators and details.")
 if simple:
     unit_tail = ("per " + unit.split("/")[-1]) if "/" in unit else ""
+    # today's move
+    prev = res.get("prev_close")
+    move_txt = ""
+    try:
+        if prev:
+            chg = (spot / float(prev) - 1) * 100
+            move_txt = f"  ({chg:+.1f}% vs yesterday)"
+    except Exception:
+        pass
     st.header(f"{icon} {name}")
-    st.subheader(f"Right now: ${fmtp(spot)} {unit_tail}")
+    st.subheader(f"Right now: ${fmtp(spot)} {unit_tail}{move_txt}")
 
     tf_map = {"Next few hours": "4 hours", "Tomorrow": "Next day",
               "Next week": "Next week"}
     tf = st.radio("Look ahead:", list(tf_map.keys()), index=1, horizontal=True)
     plan = res.get("plans", {}).get(tf_map[tf])
 
+    # ---- 1) the call, in one clear line ----
     if not plan or plan.get("direction") == "WAIT":
-        st.markdown("## 🤷 The app is **NOT SURE** which way this goes")
-        st.markdown("When it isn't sure, the smart move is usually to **wait** "
-                    "instead of guessing.")
+        st.markdown("## 🤷 NOT SURE which way this goes")
+        st.markdown("The signals don't agree enough to lean either way. When it's "
+                    "unclear like this, the smart move is usually to **wait**.")
     else:
         up = plan["direction"] == "LONG"
         prob = plan["prob"] * 100
         arrow = "📈 **UP**" if up else "📉 **DOWN**"
-        strength = ("but only *barely* — this is basically a coin toss" if prob < 55
+        strength = ("but only *barely* — almost a coin toss" if prob < 55
                     else "a *slight* lean" if prob < 60 else "a *stronger* lean")
         st.markdown(f"## Leaning {arrow}")
-        st.markdown(f"({strength} — about **{prob:.0f}%** odds)")
-        st.markdown("**If you want to try a trade:**")
+        st.progress(min(max((prob - 40) / 40, 0.02), 1.0),
+                    text=f"about {prob:.0f}% odds it goes {'up' if up else 'down'} "
+                         f"({strength})")
+
+    # ---- 2) WHY — the signals in plain words ----
+    st.markdown("#### 🔎 Why")
+    plain = {
+        "trend_cross": {1: "The recent trend is **up**", -1: "The recent trend is **down**",
+                        0: "The trend is flat"},
+        "vs200": {1: "Price is **above** its long-term average (healthy)",
+                  -1: "Price is **below** its long-term average (weak)",
+                  0: "Price is near its long-term average"},
+        "rsi": {1: "It's been beaten down lately — could **bounce**",
+                -1: "It's run up a lot lately — could **pull back**",
+                0: "Not overbought or oversold"},
+        "macd": {1: "Momentum is turning **up**", -1: "Momentum is turning **down**",
+                 0: "Momentum is flat"},
+        "boll": {1: "Price is near the **low** end of its range",
+                 -1: "Price is near the **high** end of its range",
+                 0: "Price is mid-range"},
+    }
+    for it in ind["list"]:
+        s = it["signal"]
+        dot = "🟢" if s > 0 else "🔴" if s < 0 else "⚪"
+        txt = plain.get(it["key"], {}).get(s, it.get("text", ""))
+        if txt:
+            st.markdown(f"{dot} {txt}")
+    ups = sum(1 for it in ind["list"] if it["signal"] > 0)
+    downs = sum(1 for it in ind["list"] if it["signal"] < 0)
+    st.caption(f"Scoreboard of signals: **{ups} point up**, **{downs} point down**, "
+               f"{ind_total - ups - downs} neutral.")
+
+    # ---- 3) the simple plan ----
+    if plan and plan.get("direction") != "WAIT":
+        st.markdown("#### 📋 If you want to try a trade")
         st.markdown(
             f"- 🟢 **Buy** near **${fmtp(plan['entry'])}**\n"
             f"- 🎯 **Take profit** at **${fmtp(plan['target'])}**\n"
             f"- 🛑 **Get out** at **${fmtp(plan['stop'])}** if it goes the wrong way "
-            f"— this caps how much you can lose\n"
+            f"— this caps your loss\n"
             f"- ⏰ If nothing happens by **{plan['grades_on'].strftime('%b %d')}**, "
             f"close it and look again")
         if not plan.get("ev_positive"):
-            st.warning("⚠️ For this one, the possible reward isn't really worth the "
-                       "risk right now. Many people would just **skip it**.")
+            st.warning("⚠️ The possible reward isn't really worth the risk here. "
+                       "Many people would just **skip this one**.")
+        bs = res.get("best_strategy")
+        if bs and bs.get("label"):
+            friendly = {"Trend (momentum, weekly)": "following the trend",
+                        "Mean-reversion (weekly)": "buying dips / selling spikes",
+                        "Model ensemble (weekly)": "a blend of signals",
+                        "MA crossover (50/200)": "moving-average crossover",
+                        "MACD momentum (weekly)": "momentum (MACD)",
+                        "RSI mean-reversion (weekly)": "bounce-back (RSI)"}
+            nm = friendly.get(bs["label"], bs["label"])
+            note = ("which actually made money in past tests" if bs.get("recommended")
+                    else "though it hasn't been a clear winner in past tests")
+            st.caption(f"The plan leans on **{nm}** — {note}.")
 
-    # --- reward / trust score (earns +1 for each right call, −1 for each wrong) ---
+    # ---- 4) reward / trust score ----
     right = calib.get("dir_ok", 0)
     total = calib.get("dir_tot", 0)
-    st.markdown("---")
     st.markdown("#### 🧠 How much should you trust it?")
     if total == 0:
         st.info("It hasn't checked any of its past guesses yet. As the days pass it "
-                "grades itself and starts keeping score right here — so it gets more "
-                "trustworthy to *you* the longer you use it.")
+                "grades itself and keeps score here — so it earns your trust (or "
+                "doesn't) over time.")
     else:
         score = 2 * right - total
         pct = right / total * 100
         emoji = "🟢" if pct >= 55 else "🟡" if pct >= 45 else "🔴"
-        trust = ("It's been right more often than wrong lately — but still keep bets "
-                 "small." if pct >= 55 else
-                 "It's been about a coin toss lately — take its guesses with a grain "
-                 "of salt." if pct >= 45 else
-                 "It's been wrong more than right lately — be extra careful.")
-        st.markdown(f"{emoji} Lately it was right **{right} out of {total}** times.")
-        st.markdown(f"**Reward score: {score:+d}**  — it earns **+1** each time it's "
-                    f"right and **−1** each time it's wrong.")
+        trust = ("Right more often than wrong lately — but still keep bets small."
+                 if pct >= 55 else
+                 "About a coin toss lately — take its guesses with a grain of salt."
+                 if pct >= 45 else
+                 "Wrong more than right lately — be extra careful.")
+        st.markdown(f"{emoji} Lately it was right **{right} out of {total}** times.  "
+                    f"**Reward score: {score:+d}** (+1 per right call, −1 per wrong).")
         st.caption(trust)
 
-    st.markdown("---")
-    st.caption("Remember: no app can know the future — this shows **odds, not "
-               "promises.** Only use money you can afford to lose. Want the full "
-               "charts and details? Turn off **Simple view** at the top.")
+    st.info("👉 Want the **strongest buys and sells across many stocks**? Tap "
+            "**Top & Bottom (scan)** at the top — it ranks everything so you can see "
+            "what's leaning up or down the most right now.")
+    st.caption("No app can know the future — this is **odds, not promises.** Only use "
+               "money you can afford to lose. Want every chart and number? Turn off "
+               "**Simple view** at the top.")
     st.stop()
 
 # -------------------------------------------------------------- signal card --
