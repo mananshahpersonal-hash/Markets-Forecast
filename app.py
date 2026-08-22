@@ -68,6 +68,8 @@ METAL_META = {"copper": ("Copper", "🟠"), "gold": ("Gold", "🟡"),
 
 # ----------------------------------------------------------- mode + picker ---
 st.title("📈 Market Helper")
+st.caption(f"🏷️ **App version:** {getattr(mp, 'BUILD', 'unknown')}  ·  "
+           f"if this version line matches what you just uploaded, your update is live.")
 with st.expander("❓ New here? What does this app do? (tap to read)"):
     st.markdown(
         "This app watches prices — **metals** like copper and gold, and **stocks** "

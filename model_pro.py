@@ -50,7 +50,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "2026-06-24-scan-sizer"
+BUILD = "v7 · 2026-08-22 · plain Simple view + Strong Buy/Sell lists"
 
 warnings.filterwarnings("ignore")
 
