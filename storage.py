@@ -121,6 +121,8 @@ def delete_all(keep_prefix: str = "") -> int:
     except Exception:
         return 0
 
+
+def push(state_key: str) -> int:
     """Upload this asset's state files from STATE_DIR to the gist.
     Returns the number of files uploaded. Never raises."""
     if not configured():

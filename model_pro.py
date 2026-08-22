@@ -45,12 +45,19 @@ import matplotlib.dates as mdates
 import copper_forecaster as cf  # reuse news, events, scenarios, config
 import assets  # per-asset profiles (copper, gold, silver, aluminium)
 import storage  # optional persistent sync of the learning state (gist-backed)
+
+# Safety net: if a deployed storage.py is out of date and missing a function the
+# engine calls (push/pull/delete/…), replace it with a harmless no-op instead of
+# crashing the whole prediction. The app still runs; only cloud-sync is affected.
+for _sfn in ("pull", "push", "delete", "delete_all", "configured", "backend_name"):
+    if not hasattr(storage, _sfn):
+        setattr(storage, _sfn, (lambda *a, **k: 0))
 import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v11 · 2026-08-22 · trend-aware engine + auto one-time score reset"
+BUILD = "v12 · 2026-08-22 · fix storage.push + trend-aware engine + auto reset"
 
 warnings.filterwarnings("ignore")
 
