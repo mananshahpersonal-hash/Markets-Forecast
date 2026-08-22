@@ -40,13 +40,55 @@ try:
 except Exception:
     pass
 
+# --- guard: if model_pro.py is an OLDER copy than this app.py, say so clearly
+# instead of crashing with a redacted AttributeError. ---
+_REQUIRED = ["run_prediction", "quick_read", "market_scan", "DEFAULT_SCAN_STOCKS",
+             "fan_chart", "trade_plan", "gather_ideas", "apply_screen"]
+_missing = [a for a in _REQUIRED if not hasattr(mp, a)]
+if _missing:
+    st.error(
+        "### ⚠️ Your files are out of sync\n\n"
+        "`app.py` is the latest version, but **`model_pro.py` is an older copy** "
+        "— it's missing: `" + "`, `".join(_missing) + "`.\n\n"
+        "**Fix it in your GitHub repo:**\n"
+        "1. Open the repo → click **`model_pro.py`** → the 🗑️ trash icon → "
+        "**Commit changes** (deletes the old one).\n"
+        "2. **Add file → Upload files** → drag in the new **`model_pro.py`** from "
+        "your latest download → **Commit changes**.\n"
+        "3. Check that `model_pro.py` now shows the **same fresh timestamp** as "
+        "`app.py` in the file list.\n"
+        "4. Reboot: app page → **Manage app** (bottom-right) → **⋮ → Reboot app**.\n\n"
+        "Tip: when updating, drag **all** the files in together so they can never "
+        "fall out of sync.")
+    st.caption(f"Loaded model_pro build: {getattr(mp, 'BUILD', 'unknown / very old')}")
+    st.stop()
+
 METAL_META = {"copper": ("Copper", "🟠"), "gold": ("Gold", "🟡"),
               "silver": ("Silver", "⚪"), "aluminium": ("Aluminium", "⚫")}
 
 # ----------------------------------------------------------- mode + picker ---
-mode = st.radio("What do you want to forecast?",
+st.title("📈 Market Helper")
+with st.expander("❓ New here? What does this app do? (tap to read)"):
+    st.markdown(
+        "This app watches prices — **metals** like copper and gold, and **stocks** "
+        "like Apple.\n\n"
+        "For anything you pick, it does three simple things:\n"
+        "1. **Guesses** whether the price is more likely to go **up** or **down** next.\n"
+        "2. Gives you a simple **buy / take-profit / get-out** plan, if you want to trade.\n"
+        "3. **Keeps score** of how often its guesses were right, so you know how much "
+        "to trust it.\n\n"
+        "It **cannot** know the future — nobody can. So it deals in **odds, not "
+        "promises.** Only ever use money you can afford to lose.\n\n"
+        "**The tabs below:**\n"
+        "- **Metals / Stocks** — look at one thing in detail.\n"
+        "- **Overview** — a quick look at everything at once.\n"
+        "- **Top & Bottom** — which things look strongest up / weakest down right now.\n"
+        "- **Stock Ideas** — lists of stocks that match simple ideas (like 'going up "
+        "and cheap').")
+
+mode = st.radio("What do you want to look at?",
                 ["Metals", "Stocks", "Overview (all at once)",
-                 "Top & Bottom (scan)"], horizontal=True)
+                 "Top & Bottom (scan)", "Stock Ideas (screens)"], horizontal=True)
 
 # ===================== 📊 OVERVIEW — all metals + your stocks at a glance ====
 if mode == "Overview (all at once)":
@@ -189,6 +231,89 @@ if mode == "Top & Bottom (scan)":
                "the full plan (entry/target/stop) on any name.")
     st.stop()
 
+# ===================== 💡 STOCK IDEAS — factor screens =======================
+if mode == "Stock Ideas (screens)":
+    st.title("💡 Stock Ideas — factor screens")
+    st.caption("Runs a basket of stocks through factor screens — momentum, value, "
+               "growth, income — the way a screener like Fidelity's does. These are "
+               "**idea generators to research, not advice or recommendations**, and "
+               "past performance is no guarantee of future results. The last columns "
+               "show your model's own technical lean as a cross-check.")
+    uni_str = st.text_area("Stocks to screen (comma-separated — edit freely)",
+                           value=", ".join(mp.DEFAULT_IDEAS_UNIVERSE), height=90)
+    screen = st.radio("Screen", mp.IDEA_SCREENS, horizontal=True)
+    go = st.button("💡  Run screens", type="primary", use_container_width=True)
+    ikey = "IDEAS:" + uni_str
+    if go or st.session_state.get("ideas_key") != ikey or "ideas" not in st.session_state:
+        cfg = cf.load_config(str(cf.HERE / "config.yaml"))
+        uni = [t.strip().upper() for t in uni_str.split(",") if t.strip()]
+        prog = st.progress(0.0, text="Gathering data… fundamentals are slow (~1–2 min)")
+
+        def _cb(frac, label):
+            try:
+                prog.progress(min(frac, 1.0), text=f"Reading {label}…")
+            except Exception:
+                pass
+        st.session_state["ideas"] = mp.gather_ideas(cfg, uni, progress=_cb)
+        st.session_state["ideas_key"] = ikey
+        prog.empty()
+    rows = st.session_state["ideas"]
+    matches = mp.apply_screen(rows, screen)
+
+    def _mc(v):
+        if not v:
+            return "—"
+        if v >= 1e12:
+            return f"${v/1e12:.1f}T"
+        if v >= 1e9:
+            return f"${v/1e9:.0f}B"
+        return f"${v/1e6:.0f}M"
+    emolean = lambda l: {"BUY": "🟢", "SELL": "🔴", "HOLD": "⚪"}.get(l, "")
+
+    if matches:
+        tbl = []
+        for r in matches[:15]:
+            row = {"Ticker": r["ticker"], "Price": f"${fmtp(r['spot'])}",
+                   "YTD": f"{r['ytd']:+.0f}%" if r.get("ytd") is not None else "—",
+                   "Mkt cap": _mc(r.get("market_cap"))}
+            if screen == "Momentum + Value":
+                row["PEG"] = f"{r['peg']:.2f}" if r.get("peg") else "—"
+            elif screen == "Momentum + Growth":
+                g = r.get("earnings_growth") or r.get("revenue_growth")
+                row["Growth"] = f"{g*100:.0f}%" if g is not None else "—"
+            elif screen == "Momentum + Income":
+                row["Yield"] = f"{r['div_yield']*100:.1f}%" if r.get("div_yield") else "—"
+            row["Model lean"] = f"{emolean(r['lean'])} {r['lean']}"
+            row["Odds ↑"] = f"{r['p_up']*100:.0f}%"
+            tbl.append(row)
+        st.markdown(f"**{screen} — {len(matches)} match(es)** "
+                    f"(showing up to 15, sorted like the article)")
+        st.table(pd.DataFrame(tbl).set_index("Ticker"))
+    else:
+        st.info(f"No stocks in your list passed the **{screen}** screen right now. "
+                f"That can mean the move isn't there, or (for value/growth/income) "
+                f"the free fundamental data was missing for these names. Try the "
+                f"**Momentum** screen — it's price-based and the most reliable.")
+
+    errs = [r for r in rows if r.get("error")]
+    if errs:
+        st.caption("No data this run for: " + ", ".join(r["ticker"] for r in errs) + ".")
+    have_f = sum(1 for r in rows if "error" not in r and
+                 (r.get("peg") or r.get("div_yield") or r.get("earnings_growth")))
+    tot = sum(1 for r in rows if "error" not in r)
+    if screen != "Momentum" and tot and have_f < tot * 0.5:
+        st.warning(f"Heads-up: fundamentals (PEG / growth / yield) came back for only "
+                   f"{have_f} of {tot} names from the free feed, so this screen is "
+                   f"thinner than it should be. The **Momentum** screen doesn't need "
+                   f"fundamentals and is the most reliable here.")
+    st.caption("Screens are idea generators — **not advice, not a recommendation, "
+               "not certainty.** Mind concentration risk (results often cluster in "
+               "one sector), diversify, and research each name against your own "
+               "goals and risk tolerance. Fundamentals come from Yahoo's free data "
+               "and may be delayed or incomplete. Open the Stocks tab for the full "
+               "plan on any ticker.")
+    st.stop()
+
 asset_key = stock_ticker = None
 if mode == "Metals":
     asset_key = st.selectbox(
@@ -287,6 +412,72 @@ spot = res["spot"]
 ind = res.get("indicators", {"list": [], "bull": 0, "bear": 0, "neutral": 0})
 ind_total = len(ind["list"])
 by_name = {hf.name: hf for hf, _ in fcs}
+
+# ===================== 🟢 SIMPLE VIEW (default, plain language) ==============
+simple = st.toggle("🟢 Simple view (plain words)", value=True,
+                   help="Turn this OFF to see all the charts, indicators and details.")
+if simple:
+    unit_tail = ("per " + unit.split("/")[-1]) if "/" in unit else ""
+    st.header(f"{icon} {name}")
+    st.subheader(f"Right now: ${fmtp(spot)} {unit_tail}")
+
+    tf_map = {"Next few hours": "4 hours", "Tomorrow": "Next day",
+              "Next week": "Next week"}
+    tf = st.radio("Look ahead:", list(tf_map.keys()), index=1, horizontal=True)
+    plan = res.get("plans", {}).get(tf_map[tf])
+
+    if not plan or plan.get("direction") == "WAIT":
+        st.markdown("## 🤷 The app is **NOT SURE** which way this goes")
+        st.markdown("When it isn't sure, the smart move is usually to **wait** "
+                    "instead of guessing.")
+    else:
+        up = plan["direction"] == "LONG"
+        prob = plan["prob"] * 100
+        arrow = "📈 **UP**" if up else "📉 **DOWN**"
+        strength = ("but only *barely* — this is basically a coin toss" if prob < 55
+                    else "a *slight* lean" if prob < 60 else "a *stronger* lean")
+        st.markdown(f"## Leaning {arrow}")
+        st.markdown(f"({strength} — about **{prob:.0f}%** odds)")
+        st.markdown("**If you want to try a trade:**")
+        st.markdown(
+            f"- 🟢 **Buy** near **${fmtp(plan['entry'])}**\n"
+            f"- 🎯 **Take profit** at **${fmtp(plan['target'])}**\n"
+            f"- 🛑 **Get out** at **${fmtp(plan['stop'])}** if it goes the wrong way "
+            f"— this caps how much you can lose\n"
+            f"- ⏰ If nothing happens by **{plan['grades_on'].strftime('%b %d')}**, "
+            f"close it and look again")
+        if not plan.get("ev_positive"):
+            st.warning("⚠️ For this one, the possible reward isn't really worth the "
+                       "risk right now. Many people would just **skip it**.")
+
+    # --- reward / trust score (earns +1 for each right call, −1 for each wrong) ---
+    right = calib.get("dir_ok", 0)
+    total = calib.get("dir_tot", 0)
+    st.markdown("---")
+    st.markdown("#### 🧠 How much should you trust it?")
+    if total == 0:
+        st.info("It hasn't checked any of its past guesses yet. As the days pass it "
+                "grades itself and starts keeping score right here — so it gets more "
+                "trustworthy to *you* the longer you use it.")
+    else:
+        score = 2 * right - total
+        pct = right / total * 100
+        emoji = "🟢" if pct >= 55 else "🟡" if pct >= 45 else "🔴"
+        trust = ("It's been right more often than wrong lately — but still keep bets "
+                 "small." if pct >= 55 else
+                 "It's been about a coin toss lately — take its guesses with a grain "
+                 "of salt." if pct >= 45 else
+                 "It's been wrong more than right lately — be extra careful.")
+        st.markdown(f"{emoji} Lately it was right **{right} out of {total}** times.")
+        st.markdown(f"**Reward score: {score:+d}**  — it earns **+1** each time it's "
+                    f"right and **−1** each time it's wrong.")
+        st.caption(trust)
+
+    st.markdown("---")
+    st.caption("Remember: no app can know the future — this shows **odds, not "
+               "promises.** Only use money you can afford to lose. Want the full "
+               "charts and details? Turn off **Simple view** at the top.")
+    st.stop()
 
 # -------------------------------------------------------------- signal card --
 lean, conv = sig["lean"], sig.get("conviction", "LOW")

@@ -47,6 +47,11 @@ import assets  # per-asset profiles (copper, gold, silver, aluminium)
 import storage  # optional persistent sync of the learning state (gist-backed)
 import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 
+# Bump this whenever app.py starts depending on new functions here. app.py
+# checks for the capabilities below and shows a friendly message if this file
+# is an older copy than app.py (the #1 cause of deploy errors).
+BUILD = "2026-06-24-scan-sizer"
+
 warnings.filterwarnings("ignore")
 
 QUANTILES = [0.025, 0.16, 0.5, 0.84, 0.975]
@@ -1254,6 +1259,113 @@ def market_scan(cfg: dict, stock_tickers=None, progress=None) -> dict:
     return {"top": top, "bottom": bottom, "all": valid, "errors": errors,
             "graded": g, "correct": scores["correct"],
             "acc": (scores["correct"] / g) if g else None, "asof": now}
+
+
+DEFAULT_IDEAS_UNIVERSE = ["AAPL", "MSFT", "NVDA", "AVGO", "AMD", "MU", "ORCL",
+    "CRM", "ADBE", "QCOM", "DELL", "ANET", "GOOGL", "META", "AMZN", "NFLX", "TSLA",
+    "HD", "COST", "WMT", "PG", "KO", "PEP", "JPM", "BAC", "GS", "V", "MA", "AXP",
+    "XOM", "CVX", "CAT", "GE", "HON", "UNH", "JNJ", "LLY", "ABBV", "MRK", "T",
+    "VZ", "MO", "IBM"]
+
+
+def _fundamentals(ticker: str) -> dict:
+    """Best-effort fundamentals from Yahoo's free feed (slow, sometimes missing).
+    Returns Nones rather than raising so a screen still works on partial data."""
+    pe = peg = dy = mc = eg = rg = None
+    try:
+        info = cf.yf.Ticker(ticker).info or {}
+        pe = info.get("trailingPE") or info.get("forwardPE")
+        peg = info.get("pegRatio") or info.get("trailingPegRatio")
+        dy = info.get("dividendYield")
+        if dy is not None and dy > 1.5:      # some feeds give percent, normalize to fraction
+            dy = dy / 100.0
+        mc = info.get("marketCap")
+        eg = info.get("earningsGrowth")
+        rg = info.get("revenueGrowth")
+    except Exception:
+        pass
+    return {"pe": pe, "peg": peg, "div_yield": dy, "market_cap": mc,
+            "earnings_growth": eg, "revenue_growth": rg}
+
+
+def gather_ideas(cfg: dict, tickers=None, progress=None) -> list:
+    """Build the raw idea table: price-momentum metrics (reliable) + best-effort
+    fundamentals + this model's own technical lean, per stock. Screens are applied
+    on top of this. Idea generation, NOT advice."""
+    tickers = tickers if tickers is not None else DEFAULT_IDEAS_UNIVERSE
+    out = []
+    total = max(len(tickers), 1)
+    done = 0
+    yr = dt.datetime.utcnow().year
+    for t in tickers:
+        prof = assets.resolve(None, t)
+        try:
+            df = cf.yf.download(prof["ticker"], period="2y", interval="1d",
+                                auto_adjust=False, progress=False)
+            close = cf._close_series(df)
+        except Exception:
+            df, close = None, None
+        done += 1
+        if progress:
+            progress(done / total, t)
+        if close is None or len(close) < 60:
+            out.append({"ticker": t, "name": prof["name"], "error": "no data"})
+            continue
+        spot = float(close.iloc[-1])
+        ytd = None
+        cy = close[close.index.year == yr]
+        if len(cy) > 0:
+            base = float(cy.iloc[0])
+            ytd = (spot / base - 1.0) * 100.0 if base > 0 else None
+        avgvol = None
+        try:
+            if df is not None and "Volume" in df:
+                avgvol = float(pd.to_numeric(df["Volume"], errors="coerce").tail(90).mean())
+        except Exception:
+            pass
+        sma50 = float(close.tail(50).mean())
+        sma200 = float(close.tail(200).mean()) if len(close) >= 200 else None
+        hi = float(close.tail(252).max())
+        pct_from_high = (spot / hi - 1.0) * 100.0 if hi > 0 else None
+        rd = _read_from_daily(cfg, prof, close)
+        row = {"ticker": t, "name": prof["name"], "spot": spot, "ytd": ytd,
+               "avgvol": avgvol, "above50": spot > sma50,
+               "above200": (sma200 is not None and spot > sma200),
+               "pct_from_high": pct_from_high, "lean": rd["lean"],
+               "p_up": rd["p_up"], "z": rd["z"]}
+        row.update(_fundamentals(prof["ticker"]))
+        out.append(row)
+    return out
+
+
+IDEA_SCREENS = ["Momentum", "Momentum + Value", "Momentum + Growth",
+                "Momentum + Income"]
+
+
+def apply_screen(rows: list, screen: str) -> list:
+    """Apply a Fidelity-style factor screen to the gathered rows. Thresholds are
+    sensible defaults in the spirit of the article (point-in-time, adjustable)."""
+    v = [r for r in rows if "error" not in r]
+    ytd = lambda r: (r.get("ytd") if r.get("ytd") is not None else -999.0)
+    liq = lambda r: (r.get("avgvol") or 0) >= 300_000
+    if screen == "Momentum + Value":
+        res = [r for r in v if ytd(r) >= 15 and r.get("peg") is not None
+               and 0 < r["peg"] <= 2.0 and liq(r)]
+        res.sort(key=lambda r: (r.get("market_cap") or 0), reverse=True)
+    elif screen == "Momentum + Growth":
+        def grows(r):
+            eg, rg = r.get("earnings_growth"), r.get("revenue_growth")
+            return (eg is not None and eg >= 0.20) or (rg is not None and rg >= 0.20)
+        res = [r for r in v if ytd(r) >= 15 and grows(r) and liq(r)]
+        res.sort(key=lambda r: (r.get("market_cap") or 0), reverse=True)
+    elif screen == "Momentum + Income":
+        res = [r for r in v if ytd(r) >= 8 and r.get("div_yield") is not None
+               and r["div_yield"] >= 0.03 and liq(r)]
+        res.sort(key=lambda r: (r.get("market_cap") or 0), reverse=True)
+    else:  # pure Momentum (price-based, most reliable)
+        res = [r for r in v if ytd(r) >= 15 and r.get("above200") and liq(r)]
+        res.sort(key=lambda r: ytd(r), reverse=True)
+    return res
 
 
 def trade_plan(hf, spot: float, signal: dict) -> dict:
