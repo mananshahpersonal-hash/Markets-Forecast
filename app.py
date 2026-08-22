@@ -63,6 +63,21 @@ if _missing:
     st.caption(f"Loaded model_pro build: {getattr(mp, 'BUILD', 'unknown / very old')}")
     st.stop()
 
+# One-time reset after the trend-aware engine change: wipe every asset's old
+# track record (from the old trend-fighting logic) so the new engine is judged
+# fresh. Runs once per install/gist (guarded by a marker), once per session.
+if "reset_all_checked" not in st.session_state:
+    try:
+        if mp.maybe_reset_all_once():
+            st.session_state["just_reset_all"] = True
+    except Exception:
+        pass
+    st.session_state["reset_all_checked"] = True
+if st.session_state.pop("just_reset_all", False):
+    st.success("♻️ Engine upgraded to the trend-aware version — every score was "
+               "reset to start fresh. From now on you're seeing the new engine's "
+               "real track record.")
+
 METAL_META = {"copper": ("Copper", "🟠"), "gold": ("Gold", "🟡"),
               "silver": ("Silver", "⚪"), "aluminium": ("Aluminium", "⚫")}
 

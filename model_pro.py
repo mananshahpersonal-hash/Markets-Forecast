@@ -50,7 +50,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v10 · 2026-08-22 · trend-aware engine (stops fighting trends) + score reset"
+BUILD = "v11 · 2026-08-22 · trend-aware engine + auto one-time score reset"
 
 warnings.filterwarnings("ignore")
 
@@ -1479,20 +1479,63 @@ def apply_screen(rows: list, screen: str) -> list:
     return res
 
 
+RESET_TOKEN = "trend-v10-2026-08-22"   # bump to force a fresh one-time reset
+
+
 def reset_learning(state_key: str) -> None:
-    """Wipe an asset's learning history (calibration + logged/graded predictions)
-    so the score starts fresh — used after a model change so old mistakes from the
-    old logic don't drag the new model's track record forever."""
-    for p in (_calib_path(state_key), _pred_log(state_key), _eval_log(state_key)):
-        try:
-            if p.exists():
-                p.unlink()
-        except Exception:
-            pass
+    """Wipe an asset's learning history (calibration + logged/graded predictions +
+    indicator scorecard) both locally and on the gist, so the score starts fresh
+    after a model change instead of dragging old mistakes forever."""
     try:
-        storage.push(state_key)
+        for p in STATE_DIR.glob(f"{state_key}_*"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
     except Exception:
         pass
+    try:
+        storage.delete(state_key)          # remove from the gist too, or pull restores it
+    except Exception:
+        pass
+
+
+def maybe_reset_all_once() -> bool:
+    """Once after a model change, wipe EVERY asset's old track record (which came
+    from the old logic) so the improved engine is measured fresh. Uses a marker so
+    it runs a single time per install/gist. Returns True if it just reset."""
+    storage.pull("resetmarker")
+    mpath = STATE_DIR / "resetmarker_token.json"
+    cur = None
+    if mpath.exists():
+        try:
+            cur = json.loads(mpath.read_text()).get("token")
+        except Exception:
+            cur = None
+    if cur == RESET_TOKEN:
+        return False
+    # wipe the gist (keep only the marker) and all local state
+    try:
+        storage.delete_all(keep_prefix="resetmarker_")
+    except Exception:
+        pass
+    try:
+        for p in STATE_DIR.glob("*"):
+            if p.name.startswith("resetmarker_"):
+                continue
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        mpath.write_text(json.dumps({"token": RESET_TOKEN}))
+        storage.push("resetmarker")
+    except Exception:
+        pass
+    return True
 
 
 def trade_plan(hf, spot: float, signal: dict) -> dict:

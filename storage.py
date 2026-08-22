@@ -79,7 +79,48 @@ def pull(state_key: str) -> int:
         return 0
 
 
-def push(state_key: str) -> int:
+def delete(state_key: str) -> int:
+    """Delete this asset's state files FROM the gist (sets them to null). Returns
+    the count removed. Needed because push() never deletes, so a reset would
+    otherwise be undone on the next pull. Never raises."""
+    if not configured():
+        return 0
+    try:
+        r = requests.get(_API + _gist_id(), headers=_headers(), timeout=15)
+        if r.status_code != 200:
+            return 0
+        files = r.json().get("files", {}) or {}
+        prefix = f"{state_key}_"
+        payload = {name: None for name in files if name.startswith(prefix)}
+        if not payload:
+            return 0
+        r2 = requests.patch(_API + _gist_id(), headers=_headers(),
+                            json={"files": payload}, timeout=20)
+        return len(payload) if r2.status_code == 200 else 0
+    except Exception:
+        return 0
+
+
+def delete_all(keep_prefix: str = "") -> int:
+    """Delete every state file from the gist (optionally keeping ones whose name
+    starts with keep_prefix). Used for a one-time full reset. Never raises."""
+    if not configured():
+        return 0
+    try:
+        r = requests.get(_API + _gist_id(), headers=_headers(), timeout=15)
+        if r.status_code != 200:
+            return 0
+        files = r.json().get("files", {}) or {}
+        payload = {name: None for name in files
+                   if not (keep_prefix and name.startswith(keep_prefix))}
+        if not payload:
+            return 0
+        r2 = requests.patch(_API + _gist_id(), headers=_headers(),
+                            json={"files": payload}, timeout=20)
+        return len(payload) if r2.status_code == 200 else 0
+    except Exception:
+        return 0
+
     """Upload this asset's state files from STATE_DIR to the gist.
     Returns the number of files uploaded. Never raises."""
     if not configured():
