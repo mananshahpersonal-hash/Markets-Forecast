@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v13 · 2026-08-22 · Live mode + pinned strong-signal alerts"
+BUILD = "v14 · 2026-08-22 · buy + sell alert lists, reconciled with the scan"
 
 warnings.filterwarnings("ignore")
 
@@ -1160,6 +1160,21 @@ def _read_from_daily(cfg: dict, profile: dict, daily) -> dict:
             "ind_bear": ind["bear"], "rsi": ind.get("rsi"),
             "trend_up": trend_up, "trend_dn": trend_dn, "trend_pct": trend_pct,
             "overbought": overext_up, "oversold": overext_down}
+
+
+def strong_trend_signal(r) -> Optional[str]:
+    """Shared definition of a 'strong' buy/sell, used by BOTH the top-of-app alert
+    and the Top & Bottom 'strong only' view so they never disagree. It's a
+    medium-term MOMENTUM signal: a clean 50/200-day trend, a big 3-month move
+    (>=12%), and not overextended. The edge here is weeks-to-months, not next week
+    (short-term odds stay near a coin flip — that's honest)."""
+    if not isinstance(r, dict):
+        return None
+    if r.get("trend_up") and not r.get("overbought") and r.get("trend_pct", 0) >= 12:
+        return "BUY"
+    if r.get("trend_dn") and not r.get("oversold") and r.get("trend_pct", 0) <= -12:
+        return "SELL"
+    return None
 
 
 def quick_read(cfg: dict, asset_key: str = None,

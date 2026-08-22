@@ -147,58 +147,46 @@ if need_alert:
         st.session_state["alert_ts"] = _now
 
 _reads = st.session_state.get("alert_reads", [])
+_sbuys = sorted([r for r in _reads if mp.strong_trend_signal(r) == "BUY"],
+                key=lambda r: r.get("trend_pct", 0), reverse=True)
+_ssells = sorted([r for r in _reads if mp.strong_trend_signal(r) == "SELL"],
+                 key=lambda r: r.get("trend_pct", 0))
 
 
-def _screaming(r):
-    """A strong, joinable trend: 50/200-day aligned, a big move (>=12% over ~3
-    months), and NOT overextended — a real momentum setup, not a spike to chase.
-    In a bull market several may qualify (we show the strongest); in a choppy or
-    falling market, few or none — which is the honest signal to sit tight."""
-    if r.get("trend_up") and not r.get("overbought") and r.get("trend_pct", 0) >= 12:
-        return "BUY"
-    if r.get("trend_dn") and not r.get("oversold") and r.get("trend_pct", 0) <= -12:
-        return "SELL"
-    return None
-
-
-_sbuys = sorted([r for r in _reads if _screaming(r) == "BUY"],
-                key=lambda r: r.get("move_pct", 0), reverse=True)
-_ssells = sorted([r for r in _reads if _screaming(r) == "SELL"],
-                 key=lambda r: r.get("move_pct", 0))
-
-
-def _sig_line(r):
-    return (f"**{r['name']}** — ${fmtp(r['spot'])} · {r['p_up']*100:.0f}% odds up · "
-            f"~{r['move_pct']:+.1f}%/wk · {r['ind_bull']}▲/{r['ind_bear']}▼")
+def _sig_line(r, kind):
+    arrow = "▲" if kind == "buy" else "▼"
+    return (f"**{r['name']}** — ${fmtp(r['spot'])} · {arrow} {r.get('trend_pct', 0):+.0f}% "
+            f"over 3mo · {r['ind_bull']}▲/{r['ind_bear']}▼ · next-wk odds "
+            f"{r['p_up']*100:.0f}%")
 
 
 if _sbuys:
     st.markdown(
         "<div style='background:#0F6E56;color:white;border-radius:10px;"
-        "padding:14px 18px;font-size:17px;'>🚨🟢 <b>STRONG BUY SIGNAL(S) RIGHT NOW</b>"
-        "</div>", unsafe_allow_html=True)
-    for r in _sbuys[:5]:
-        st.markdown("🟢 " + _sig_line(r))
-    st.caption("In strong uptrends (up 12%+ over ~3 months, above their key moving "
-               "averages) and **not** overextended — solid momentum setups to "
-               "research, showing the strongest first. Still **odds, not a "
-               "promise** — use a stop and size small. Open Stocks/Metals for the "
-               "full plan.")
-elif _ssells:
+        "padding:14px 18px;font-size:17px;'>🚨🟢 <b>STRONG BUY SETUPS (uptrend "
+        "momentum)</b></div>", unsafe_allow_html=True)
+    for r in _sbuys[:10]:
+        st.markdown("🟢 " + _sig_line(r, "buy"))
+    st.caption("Flagged for a strong **3-month uptrend** (above key averages, not "
+               "overextended) — a momentum edge that plays out over weeks-to-months. "
+               "The near-50% next-week odds are honest: short-term is still a coin "
+               "flip; the trend is the edge. Odds, not a promise — use a stop.")
+if _ssells:
     st.markdown(
         "<div style='background:#A32D2D;color:white;border-radius:10px;"
-        "padding:14px 18px;font-size:17px;'>🚨🔴 <b>STRONG SELL / AVOID SIGNAL(S)</b>"
-        "</div>", unsafe_allow_html=True)
-    for r in _ssells[:5]:
-        st.markdown("🔴 " + _sig_line(r))
-    st.caption("Strong downward signals — **not advice**, but a heads-up if you hold "
-               "these. Odds, not certainty.")
-else:
+        "padding:14px 18px;font-size:17px;margin-top:8px;'>🚨🔴 <b>STRONG SELL / "
+        "AVOID (downtrend momentum)</b></div>", unsafe_allow_html=True)
+    for r in _ssells[:10]:
+        st.markdown("🔴 " + _sig_line(r, "sell"))
+    st.caption("In a strong **3-month downtrend** (below key averages, not yet "
+               "oversold) — momentum is against these; a heads-up if you hold them. "
+               "**Not advice.** Odds, not certainty.")
+if not _sbuys and not _ssells:
     ts = st.session_state.get("alert_ts")
     when = time.strftime("%H:%M", time.localtime(ts)) if ts else "—"
-    st.info(f"✅ No screaming buys or sells right now (checked {when}). That's the "
-            f"honest, healthy default — strong, high-confidence setups are rare. "
-            f"{'Live mode will keep watching.' if live else 'Turn on Live mode to keep watching.'}")
+    st.info(f"✅ No strong buy or sell setups right now (checked {when}). That's the "
+            f"honest, healthy default — clean, strong trends are the exception, not "
+            f"the rule. {'Live mode keeps watching.' if live else 'Turn on Live mode to keep watching.'}")
 
 st.divider()
 
@@ -329,10 +317,10 @@ if mode == "Top & Bottom (scan)":
              "This list is often short — sometimes empty — and that's the honest answer.")
 
     if strong_only:
-        buys = sorted([r for r in sc["all"] if r["strength"] >= 2 and r["lean"] == "BUY"],
-                      key=lambda r: r["z"], reverse=True)
-        sells = sorted([r for r in sc["all"] if r["strength"] >= 2 and r["lean"] == "SELL"],
-                       key=lambda r: r["z"])
+        buys = sorted([r for r in sc["all"] if mp.strong_trend_signal(r) == "BUY"],
+                      key=lambda r: r.get("trend_pct", 0), reverse=True)
+        sells = sorted([r for r in sc["all"] if mp.strong_trend_signal(r) == "SELL"],
+                       key=lambda r: r.get("trend_pct", 0))
         b1, b2 = st.columns(2)
         with b1:
             st.markdown("#### 🟢 Strong BUYs")
@@ -372,20 +360,20 @@ if mode == "Top & Bottom (scan)":
                    "*strong/moderate* is a real signal; *weak* or *—* is a coin toss. "
                    "Want just the real ones? Flip the **⭐ strong only** switch above.")
 
-        strong = [r for r in sc["all"] if r["strength"] >= 2]
+        strong = [r for r in sc["all"] if mp.strong_trend_signal(r)]
         if not strong:
-            st.warning("⚠️ **Honest heads-up: nothing is a *strong* buy or sell right "
-                       "now.** The names above are the *relative* leaders and "
-                       "laggards, but the edges are thin — no clean, high-confidence "
-                       "trades today. Forcing a trade here is how people lose. Often "
-                       "the smart move is to wait for a clearer setup.")
+            st.warning("⚠️ **No strong buy or sell setups right now.** The names "
+                       "above are the *relative* leaders and laggards by next-week "
+                       "lean, but none are in a strong, clean trend — no "
+                       "high-confidence momentum trades today. Often the smart move "
+                       "is to wait.")
         else:
-            b = [r["name"] for r in strong if r["lean"] == "BUY"]
-            s = [r["name"] for r in strong if r["lean"] == "SELL"]
+            b = [r["name"] for r in strong if mp.strong_trend_signal(r) == "BUY"]
+            s = [r["name"] for r in strong if mp.strong_trend_signal(r) == "SELL"]
             if b:
-                st.success("🟢 **Actually-strong BUY signals right now:** " + ", ".join(b))
+                st.success("🟢 **Strong BUY setups (uptrend momentum):** " + ", ".join(b))
             if s:
-                st.error("🔴 **Actually-strong SELL signals right now:** " + ", ".join(s))
+                st.error("🔴 **Strong SELL setups (downtrend momentum):** " + ", ".join(s))
     if sc["errors"]:
         st.caption("No data this run for: " + ", ".join(sc["errors"]) +
                    " — Yahoo can rate-limit a big scan; try again in a minute.")
