@@ -50,7 +50,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v7 · 2026-08-22 · plain Simple view + Strong Buy/Sell lists"
+BUILD = "v8 · 2026-08-22 · broad index scan (Nasdaq-100 · Dow · S&P 100)"
 
 warnings.filterwarnings("ignore")
 
@@ -1158,10 +1158,80 @@ def _load_scan_scores() -> dict:
     return {"graded": 0, "correct": 0, "per": {}}
 
 
+# --- broad index universes for the scan (curated; edit anytime) --------------
+DOW_30 = ["AAPL","AMGN","AXP","BA","CAT","CRM","CSCO","CVX","DIS","DOW","GS","HD",
+    "HON","IBM","JNJ","JPM","KO","MCD","MMM","MRK","MSFT","NKE","PG","TRV","UNH",
+    "V","VZ","WMT","NVDA","AMZN"]
+
+NASDAQ_100 = ["AAPL","MSFT","NVDA","AMZN","META","GOOGL","GOOG","AVGO","TSLA","COST",
+    "NFLX","ADBE","PEP","AMD","CSCO","TMUS","INTC","QCOM","INTU","TXN","AMGN","ISRG",
+    "HON","AMAT","BKNG","VRTX","ADP","SBUX","GILD","MDLZ","ADI","REGN","LRCX","PANW",
+    "MU","KLAC","SNPS","CDNS","MELI","PYPL","MAR","CRWD","ORLY","CSX","ABNB","FTNT",
+    "DASH","ADSK","NXPI","WDAY","TTD","CHTR","MNST","PCAR","PAYX","ROP","KDP","ODFL",
+    "FANG","EA","CTAS","DDOG","VRSK","EXC","GEHC","KHC","LULU","FAST","CSGP","BKR",
+    "XEL","IDXX","ZS","TTWO","ANSS","ON","CDW","BIIB","MRVL","DXCM","WBD","ILMN",
+    "ARM","SMCI","TEAM","CCEP","GFS","MDB","AZN"]
+
+SP_100 = ["AAPL","ABBV","ABT","ACN","ADBE","AIG","AMD","AMGN","AMT","AMZN","AVGO",
+    "AXP","BA","BAC","BK","BKNG","BLK","BMY","BRK.B","C","CAT","CHTR","CL","CMCSA",
+    "COF","COP","COST","CRM","CSCO","CVS","CVX","DHR","DIS","DOW","DUK","EMR","EXC",
+    "F","FDX","GD","GE","GILD","GM","GOOG","GOOGL","GS","HD","HON","IBM","INTC","JNJ",
+    "JPM","KO","LIN","LLY","LMT","LOW","MA","MCD","MDLZ","MDT","MET","META","MMM","MO",
+    "MRK","MS","MSFT","NEE","NFLX","NKE","NVDA","ORCL","PEP","PFE","PG","PM","PYPL",
+    "QCOM","RTX","SBUX","SCHW","SO","T","TGT","TMO","TSLA","TXN","UNH","UNP","UPS","V",
+    "VZ","WFC","WMT","XOM"]
+
+SCAN_UNIVERSES = {
+    "My custom list": None,        # uses whatever is typed in the box
+    "Dow 30": DOW_30,
+    "Nasdaq-100 (big tech)": NASDAQ_100,
+    "S&P 100 (large caps)": SP_100,
+    "Everything (big US mix)": sorted(set(DOW_30 + NASDAQ_100 + SP_100)),
+}
+
+
+def _batch_close_series(tickers, chunk: int = 40, progress=None,
+                        base: float = 0.0, span: float = 1.0) -> dict:
+    """Download many tickers in a few batched requests (rate-limit friendly) and
+    return {ticker: tz-naive close Series}. Failures are skipped, not raised."""
+    out = {}
+    total = max(len(tickers), 1)
+    done = 0
+    for i in range(0, len(tickers), chunk):
+        grp = tickers[i:i + chunk]
+        try:
+            data = cf.yf.download(grp, period="1y", interval="1d",
+                                  group_by="ticker", auto_adjust=False,
+                                  progress=False, threads=True)
+        except Exception:
+            data = None
+        for t in grp:
+            done += 1
+            if progress:
+                progress(base + span * done / total, t)
+            try:
+                if data is None:
+                    continue
+                if len(grp) == 1:
+                    sub = data
+                elif hasattr(data.columns, "levels") and t in data.columns.get_level_values(0):
+                    sub = data[t]
+                else:
+                    sub = None
+                if sub is None or "Close" not in sub.columns:
+                    continue
+                s = cf._close_series(sub)
+                if s is not None and len(s) >= 60:
+                    out[t] = s
+            except Exception:
+                continue
+    return out
+
+
 def market_scan(cfg: dict, stock_tickers=None, progress=None) -> dict:
-    """Read every metal + stock, rank by weekly lean, and (self-learning) grade
-    the prior scan's calls that have come due, accumulating a scan hit-rate.
-    Persists via the gist when configured. Ranks/odds, NOT facts."""
+    """Read every metal + a (possibly large) stock universe, rank by weekly lean,
+    and (self-learning) grade the prior scan's calls that have come due. Stocks are
+    fetched in batches so 100+ names won't rate-limit. Ranks/odds, NOT facts."""
     storage.pull("scan")
     metals = ["copper", "gold", "silver", "aluminium"]
     stocks = stock_tickers if stock_tickers is not None else DEFAULT_SCAN_STOCKS
@@ -1175,23 +1245,33 @@ def market_scan(cfg: dict, stock_tickers=None, progress=None) -> dict:
             pending = []
     now = dt.datetime.utcnow().replace(microsecond=0)
     items, errors = [], []
+
+    # ---- pre-fetch all price series ----
+    # metals individually (only 4, special futures tickers); stocks in batches.
+    close_map = {}
+    n_metal = len(metals)
+    for idx, m in enumerate(metals):
+        prof = assets.resolve(m, None)
+        try:
+            df = cf.yf.download(prof["ticker"], period="1y", interval="1d",
+                                auto_adjust=False, progress=False)
+            s = cf._close_series(df)
+            if s is not None and len(s) >= 60:
+                close_map[prof["ticker"]] = s
+        except Exception:
+            pass
+        if progress:
+            progress(0.05 * (idx + 1) / max(n_metal, 1), prof["name"])
+    close_map.update(_batch_close_series(stocks, chunk=40, progress=progress,
+                                         base=0.05, span=0.85))
+
     keys = [("metal", m) for m in metals] + [("stock", t) for t in stocks]
     remaining = list(pending)
-    total = max(len(keys), 1)
-    done = 0
     for kind, key in keys:
         prof = assets.resolve(key if kind == "metal" else None,
                               key if kind == "stock" else None)
         sk = prof["state_key"]
-        try:
-            df = cf.yf.download(prof["ticker"], period="2y", interval="1d",
-                                auto_adjust=False, progress=False)
-            daily = cf._close_series(df)
-        except Exception:
-            daily = None
-        done += 1
-        if progress:
-            progress(done / total, prof["name"])
+        daily = close_map.get(prof["ticker"])
         if daily is None or len(daily) < 60:
             errors.append(prof["name"])
             continue
@@ -1252,12 +1332,14 @@ def market_scan(cfg: dict, stock_tickers=None, progress=None) -> dict:
             w.writerow({k: r.get(k, "") for k in _SCAN_FIELDS})
     _scan_scores_path().write_text(json.dumps(scores, indent=2))
     storage.push("scan")
+    if progress:
+        progress(1.0, "done")
     valid = [r for r in items if "z" in r]
     top = sorted(valid, key=lambda r: r["z"], reverse=True)[:10]
     bottom = sorted(valid, key=lambda r: r["z"])[:10]
     g = scores["graded"]
     return {"top": top, "bottom": bottom, "all": valid, "errors": errors,
-            "graded": g, "correct": scores["correct"],
+            "graded": g, "correct": scores["correct"], "n_scanned": len(valid),
             "acc": (scores["correct"] / g) if g else None, "asof": now}
 
 

@@ -156,20 +156,32 @@ if mode == "Overview (all at once)":
 # ===================== 🏆 TOP & BOTTOM — ranked market scan ==================
 if mode == "Top & Bottom (scan)":
     st.title("🏆 Top & Bottom — the market ranked right now")
-    st.caption("Runs every metal + a basket of big stocks through the model and "
+    st.caption("Runs every metal + a whole universe of stocks through the model and "
                "ranks them: strongest **bullish lean** up top, strongest "
                "**bearish lean** at the bottom. These are the model's leans and "
                "odds — **not facts, not guarantees.** The scan's own measured "
                "hit-rate is shown below, and it learns from every run.")
-    default_stocks = ", ".join(mp.DEFAULT_SCAN_STOCKS)
-    tickers_str = st.text_area("Stocks in the scan (comma-separated — edit freely)",
-                               value=default_stocks, height=90)
+    uni_choice = st.selectbox(
+        "Which stocks should it scan?", list(mp.SCAN_UNIVERSES.keys()), index=3,
+        help="Pick a real index list for a convincing top 10, or 'My custom list' "
+             "to type your own.")
+    preset = mp.SCAN_UNIVERSES[uni_choice]
+    if preset is None:
+        tickers_str = st.text_area("Your stocks (comma-separated)",
+                                   value=", ".join(mp.DEFAULT_SCAN_STOCKS), height=90)
+        stocks = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
+        uni_id = "custom:" + tickers_str
+    else:
+        stocks = list(preset)
+        uni_id = uni_choice
+        st.caption(f"Scanning **{len(stocks)} stocks** in {uni_choice} + 4 metals. "
+                   f"Bigger lists take longer (~1–3 min) and Yahoo may skip a few — "
+                   f"just run it again if so.")
     go = st.button("🔍  Run market scan", type="primary", use_container_width=True)
-    skey = "SCAN:" + tickers_str
+    skey = "SCAN:" + uni_id
     if go or st.session_state.get("scan_key") != skey or "scan" not in st.session_state:
         cfg = cf.load_config(str(cf.HERE / "config.yaml"))
-        stocks = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
-        prog = st.progress(0.0, text="Scanning the market… (this takes a minute)")
+        prog = st.progress(0.0, text="Scanning the market… (this can take a minute or two)")
 
         def _cb(frac, label):
             try:
@@ -180,6 +192,8 @@ if mode == "Top & Bottom (scan)":
         st.session_state["scan_key"] = skey
         prog.empty()
     sc = st.session_state["scan"]
+    st.caption(f"✅ Ranked **{sc.get('n_scanned', 0)}** names this run "
+               f"(the top/bottom 10 below are drawn from all of them).")
 
     if sc["acc"] is not None:
         st.metric("Scan track record — direction right", f"{sc['acc']*100:.0f}%",
