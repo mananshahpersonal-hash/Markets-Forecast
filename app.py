@@ -8,6 +8,7 @@ past calls, counts the adjustments it makes, and shows whether it's improving.
 
 Educational. Ranges and odds, not promises. NOT financial advice."""
 import os
+import time
 import pandas as pd
 import streamlit as st
 
@@ -15,6 +16,12 @@ import copper_forecaster as cf
 import model_pro as mp
 import assets
 import storage
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAVE_AUTOREFRESH = True
+except Exception:
+    HAVE_AUTOREFRESH = False
 
 st.set_page_config(page_title="Markets forecast", page_icon="📈", layout="wide")
 
@@ -106,6 +113,94 @@ with st.expander("❓ New here? What does this app do? (tap to read)"):
 mode = st.radio("What do you want to look at?",
                 ["Metals", "Stocks", "Overview (all at once)",
                  "Top & Bottom (scan)", "Stock Ideas (screens)"], horizontal=True)
+
+# ===================== 🔴 LIVE MODE + pinned strong-signal ALERT =============
+REFRESH_MIN = 5
+lc1, lc2, lc3 = st.columns([1.1, 1.2, 1])
+with lc1:
+    live = st.toggle("🔴 Live mode", value=st.session_state.get("live_mode", False),
+                     key="live_mode", help="Auto-refreshes every 5 minutes while the "
+                     "app is open, re-checking prices, news and strong signals.")
+with lc2:
+    check_now = st.button("🚨 Check for strong signals now", use_container_width=True)
+with lc3:
+    if live:
+        if HAVE_AUTOREFRESH:
+            st_autorefresh(interval=REFRESH_MIN * 60 * 1000, key="live_tick")
+            st.caption(f"🔴 LIVE · every {REFRESH_MIN} min")
+        else:
+            st.caption("Add-on missing — use the button to refresh.")
+
+# decide whether to (re)run the background alert scan (cache ~10 min)
+_now = time.time()
+_last = st.session_state.get("alert_ts")
+need_alert = check_now or ("alert_reads" not in st.session_state)
+if live and (_last is None or (_now - _last) > 10 * 60):
+    need_alert = True
+if need_alert:
+    with st.spinner("Scanning the market for strong signals…"):
+        _cfg = cf.load_config(str(cf.HERE / "config.yaml"))
+        try:
+            st.session_state["alert_reads"] = mp.quick_universe_reads(_cfg, mp.ALERT_UNIVERSE)
+        except Exception:
+            st.session_state["alert_reads"] = st.session_state.get("alert_reads", [])
+        st.session_state["alert_ts"] = _now
+
+_reads = st.session_state.get("alert_reads", [])
+
+
+def _screaming(r):
+    """A strong, joinable trend: 50/200-day aligned, a big move (>=12% over ~3
+    months), and NOT overextended — a real momentum setup, not a spike to chase.
+    In a bull market several may qualify (we show the strongest); in a choppy or
+    falling market, few or none — which is the honest signal to sit tight."""
+    if r.get("trend_up") and not r.get("overbought") and r.get("trend_pct", 0) >= 12:
+        return "BUY"
+    if r.get("trend_dn") and not r.get("oversold") and r.get("trend_pct", 0) <= -12:
+        return "SELL"
+    return None
+
+
+_sbuys = sorted([r for r in _reads if _screaming(r) == "BUY"],
+                key=lambda r: r.get("move_pct", 0), reverse=True)
+_ssells = sorted([r for r in _reads if _screaming(r) == "SELL"],
+                 key=lambda r: r.get("move_pct", 0))
+
+
+def _sig_line(r):
+    return (f"**{r['name']}** — ${fmtp(r['spot'])} · {r['p_up']*100:.0f}% odds up · "
+            f"~{r['move_pct']:+.1f}%/wk · {r['ind_bull']}▲/{r['ind_bear']}▼")
+
+
+if _sbuys:
+    st.markdown(
+        "<div style='background:#0F6E56;color:white;border-radius:10px;"
+        "padding:14px 18px;font-size:17px;'>🚨🟢 <b>STRONG BUY SIGNAL(S) RIGHT NOW</b>"
+        "</div>", unsafe_allow_html=True)
+    for r in _sbuys[:5]:
+        st.markdown("🟢 " + _sig_line(r))
+    st.caption("In strong uptrends (up 12%+ over ~3 months, above their key moving "
+               "averages) and **not** overextended — solid momentum setups to "
+               "research, showing the strongest first. Still **odds, not a "
+               "promise** — use a stop and size small. Open Stocks/Metals for the "
+               "full plan.")
+elif _ssells:
+    st.markdown(
+        "<div style='background:#A32D2D;color:white;border-radius:10px;"
+        "padding:14px 18px;font-size:17px;'>🚨🔴 <b>STRONG SELL / AVOID SIGNAL(S)</b>"
+        "</div>", unsafe_allow_html=True)
+    for r in _ssells[:5]:
+        st.markdown("🔴 " + _sig_line(r))
+    st.caption("Strong downward signals — **not advice**, but a heads-up if you hold "
+               "these. Odds, not certainty.")
+else:
+    ts = st.session_state.get("alert_ts")
+    when = time.strftime("%H:%M", time.localtime(ts)) if ts else "—"
+    st.info(f"✅ No screaming buys or sells right now (checked {when}). That's the "
+            f"honest, healthy default — strong, high-confidence setups are rare. "
+            f"{'Live mode will keep watching.' if live else 'Turn on Live mode to keep watching.'}")
+
+st.divider()
 
 # ===================== 📊 OVERVIEW — all metals + your stocks at a glance ====
 if mode == "Overview (all at once)":
@@ -447,8 +542,10 @@ use_lgbm = st.checkbox("Use LightGBM (M5-winning method, if installed)", value=T
 
 run = st.button("🔄  Update prediction now", type="primary", use_container_width=True)
 
+_res_ts = st.session_state.get("result_ts", 0)
+_stale = live and (time.time() - _res_ts) > REFRESH_MIN * 60
 need = (run or "result" not in st.session_state
-        or st.session_state.get("load_key") != load_key)
+        or st.session_state.get("load_key") != load_key or _stale)
 if need:
     with st.spinner(f"Fetching {name} price + {profile['ref_label']} + news, "
                     f"grading past predictions, running the ensemble and "
@@ -462,6 +559,7 @@ if need:
                 scenario_key=None if scenario == "(none)" else scenario,
                 use_lgbm=use_lgbm)
             st.session_state["load_key"] = load_key
+            st.session_state["result_ts"] = time.time()
             st.session_state["error"] = None
         except Exception as exc:
             st.session_state["error"] = str(exc)

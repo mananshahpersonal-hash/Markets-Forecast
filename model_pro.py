@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v12 · 2026-08-22 · fix storage.push + trend-aware engine + auto reset"
+BUILD = "v13 · 2026-08-22 · Live mode + pinned strong-signal alerts"
 
 warnings.filterwarnings("ignore")
 
@@ -170,7 +170,7 @@ def ar1_reversion_drift(log_price: pd.Series, sigma: float,
     phi = max(min(phi, 0.99), -0.5)
     current_dev = float(dev.iloc[-1])
     drift = (phi - 1.0) * current_dev                # pull toward the mean
-    return float(np.clip(drift, -2 * sigma, 2 * sigma))
+    return float(np.clip(drift, -1.2 * sigma, 1.2 * sigma))
 
 
 def momentum_drift(log_ret: pd.Series, sigma: float, span: int = 20,
@@ -183,7 +183,7 @@ def momentum_drift(log_ret: pd.Series, sigma: float, span: int = 20,
 
 
 def trend_drift(log_price: pd.Series, sigma: float, lookback: int = 63,
-                scale: float = 0.35) -> tuple[float, float]:
+                scale: float = 0.55) -> tuple[float, float]:
     """Time-series momentum (the signal with the strongest academic support in
     commodities/equities): follow the medium-term trend. Returns (per-period
     drift in the trend direction, a regime-strength score in [-1, 1])."""
@@ -291,7 +291,7 @@ def ensemble_per_period_drift(
     # REGIME GUARD: don't let mean-reversion bet against a strong prevailing trend.
     # If reversion points opposite the trend and the trend is strong, shrink it.
     if trend_str != 0 and rev != 0 and (np.sign(rev) != np.sign(trend_str)):
-        rev *= max(0.15, 1.0 - 0.85 * abs(trend_str))
+        rev *= max(0.0, 1.0 - 2.0 * abs(trend_str))  # kill reversion that fights a clear trend
     dol, beta = dollar_drift(log_ret, dret, sigma) if dret is not None else (0.0, 0.0)
     news = cf.DEFAULT_CONFIG["model"]["news_drift_strength"] * news_score * sigma * news_decay
     lgb_d = lgbm_drift(log_price, dxy, sigma) if use_lgbm else None
@@ -1122,7 +1122,7 @@ def _read_from_daily(cfg: dict, profile: dict, daily) -> dict:
     mom = momentum_drift(ret, sigma)
     tr, trend_str = trend_drift(log_d, sigma)
     if trend_str != 0 and rev != 0 and (np.sign(rev) != np.sign(trend_str)):
-        rev *= max(0.15, 1.0 - 0.85 * abs(trend_str))     # don't fight strong trends
+        rev *= max(0.0, 1.0 - 2.0 * abs(trend_str))  # kill reversion that fights a clear trend     # don't fight strong trends
     drift = (rev * DEFAULT_WEIGHTS["reversion"] + mom * DEFAULT_WEIGHTS["momentum"]
              + tr * DEFAULT_WEIGHTS["trend"])
     cum = drift * 5.0
@@ -1148,11 +1148,18 @@ def _read_from_daily(cfg: dict, profile: dict, daily) -> dict:
     if strength == 0:
         lean = "HOLD"
     conv = {0: "\u2014", 1: "weak", 2: "moderate", 3: "strong"}[strength]
+    trend_up = isig.get("trend_cross", 0) == 1 and isig.get("vs200", 0) == 1
+    trend_dn = isig.get("trend_cross", 0) == -1 and isig.get("vs200", 0) == -1
+    trend_pct = 0.0
+    if len(log_d) >= 64:
+        trend_pct = (math.exp(float(log_d.iloc[-1] - log_d.iloc[-64])) - 1.0) * 100.0
     return {"name": profile["name"], "ticker": profile["ticker"],
             "kind": profile["kind"], "unit": profile["unit"], "spot": spot,
             "move_pct": move_pct, "p_up": p_up, "z": z, "lean": lean,
             "strength": strength, "conv": conv, "ind_bull": ind["bull"],
-            "ind_bear": ind["bear"], "rsi": ind.get("rsi")}
+            "ind_bear": ind["bear"], "rsi": ind.get("rsi"),
+            "trend_up": trend_up, "trend_dn": trend_dn, "trend_pct": trend_pct,
+            "overbought": overext_up, "oversold": overext_down}
 
 
 def quick_read(cfg: dict, asset_key: str = None,
@@ -1262,6 +1269,43 @@ def _batch_close_series(tickers, chunk: int = 40, progress=None,
             except Exception:
                 continue
     return out
+
+
+# Liquid names watched for the background "screaming buy/sell" alert.
+ALERT_UNIVERSE = sorted(set(DOW_30 + [
+    "NVDA", "AMD", "AVGO", "MU", "CRM", "ADBE", "NFLX", "TSLA", "AMZN", "GOOGL",
+    "META", "AAPL", "MSFT", "QCOM", "ORCL", "COST", "LLY", "XOM"]))
+
+
+def quick_universe_reads(cfg: dict, tickers, progress=None) -> list:
+    """Fast batched read of a stock universe -> list of per-stock reads (price,
+    lean, conviction/strength, odds). Used by the alert scan and live checks.
+    No grading/persistence — just the current read. Metals are added too."""
+    reads = []
+    closes = _batch_close_series(list(tickers), chunk=40, progress=progress,
+                                 base=0.05, span=0.9)
+    for m in ["copper", "gold", "silver", "aluminium"]:
+        prof = assets.resolve(m, None)
+        try:
+            df = cf.yf.download(prof["ticker"], period="1y", interval="1d",
+                                auto_adjust=False, progress=False)
+            s = cf._close_series(df)
+            if s is not None and len(s) >= 60:
+                closes[prof["ticker"]] = s
+        except Exception:
+            pass
+    for t in list(tickers) + ["HG=F", "GC=F", "SI=F", "ALI=F"]:
+        s = closes.get(t)
+        if s is None or len(s) < 60:
+            continue
+        prof = assets.resolve(None, t) if t not in ("HG=F", "GC=F", "SI=F", "ALI=F") \
+            else assets.resolve({"HG=F": "copper", "GC=F": "gold", "SI=F": "silver",
+                                 "ALI=F": "aluminium"}[t], None)
+        try:
+            reads.append(_read_from_daily(cfg, prof, s))
+        except Exception:
+            continue
+    return reads
 
 
 def market_scan(cfg: dict, stock_tickers=None, progress=None) -> dict:
