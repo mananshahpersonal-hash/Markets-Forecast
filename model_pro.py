@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v15 · 2026-08-22 · smart search: company names + typo suggestions"
+BUILD = "v17 · 2026-08-29 · per-stock news + next earnings date"
 
 warnings.filterwarnings("ignore")
 
@@ -1195,6 +1195,14 @@ TICKER_NAME = {
     "NKE": "Nike", "LULU": "Lululemon", "CVNA": "Carvana", "RIVN": "Rivian", "LCID": "Lucid",
     "SOFI": "SoFi", "HOOD": "Robinhood", "GME": "GameStop", "AMC": "AMC",
     "SPY": "S&P 500 ETF", "QQQ": "Nasdaq-100 ETF", "DIA": "Dow ETF", "IWM": "Russell 2000 ETF",
+    "NEM": "Newmont", "PARA": "Paramount", "WBD": "Warner Bros Discovery", "SNAP": "Snap",
+    "PINS": "Pinterest", "ROKU": "Roku", "ZM": "Zoom", "DOCU": "DocuSign", "NET": "Cloudflare",
+    "U": "Unity Software", "RBLX": "Roblox", "DKNG": "DraftKings", "MARA": "Marathon Digital",
+    "RIOT": "Riot Platforms", "PLUG": "Plug Power", "ENPH": "Enphase", "FSLR": "First Solar",
+    "DAL": "Delta Air Lines", "UAL": "United Airlines", "AAL": "American Airlines",
+    "CCL": "Carnival", "RCL": "Royal Caribbean", "MGM": "MGM Resorts", "BABA": "Alibaba",
+    "NIO": "NIO", "PDD": "PDD (Temu)", "TSM": "Taiwan Semiconductor", "ASML": "ASML",
+    "TTD": "The Trade Desk", "NEE": "NextEra Energy",
 }
 _NAME_ALIASES = {
     "google": "GOOGL", "alphabet": "GOOGL", "facebook": "META", "meta platforms": "META",
@@ -1240,6 +1248,39 @@ def _yahoo_search(q: str) -> list:
     except Exception:
         pass
     return []
+
+
+def next_earnings(ticker: str):
+    """Best-effort next earnings date for a stock. Returns a display string or
+    None. yfinance's calendar/info are flaky, so this is wrapped and never raises."""
+    import datetime as _dt
+    try:
+        cal = cf.yf.Ticker(ticker).calendar
+        ed = None
+        if isinstance(cal, dict):
+            ed = cal.get("Earnings Date")
+            if isinstance(ed, (list, tuple)) and ed:
+                ed = ed[0]
+        elif cal is not None and hasattr(cal, "loc"):
+            try:
+                ed = cal.loc["Earnings Date"][0]
+            except Exception:
+                ed = None
+        if ed is not None:
+            try:
+                return pd.Timestamp(ed).strftime("%b %d, %Y")
+            except Exception:
+                return str(ed)
+    except Exception:
+        pass
+    try:
+        info = cf.yf.Ticker(ticker).info or {}
+        ts = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
+        if ts:
+            return _dt.datetime.utcfromtimestamp(int(ts)).strftime("%b %d, %Y")
+    except Exception:
+        pass
+    return None
 
 
 def resolve_symbol(query: str):
@@ -1905,6 +1946,9 @@ def run_prediction(cfg: dict, asset_key: str = "copper",
 
     return {
         "now": now, "spot": spot, "ticker": profile["ticker"],
+        "news_items": cf.fetch_news_items(profile["news_query"], 6),
+        "earnings_date": (next_earnings(profile["ticker"])
+                          if profile["kind"] == "stock" else None),
         "prev_close": (float(daily.iloc[-2]) if len(daily) >= 2 else None),
         "asset_key": asset_key, "asset_name": profile["name"],
         "kind": profile["kind"], "state_key": state_key,

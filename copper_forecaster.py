@@ -408,6 +408,29 @@ def fetch_news_headlines(cfg: dict, query: Optional[str] = None) -> list[str]:
     return out[: cfg["news"]["max_items"]]
 
 
+def fetch_news_items(query: str, n: int = 6) -> list:
+    """Recent news as {title, link, published} for on-screen display (with the
+    latest first). Best-effort; returns [] if news is unavailable. Never raises."""
+    if feedparser is None or not query:
+        return []
+    import urllib.parse
+    q = urllib.parse.quote(f"{query}")
+    url = (f"https://news.google.com/rss/search?q={q}+when:7d"
+           f"&hl=en-US&gl=US&ceid=US:en")
+    out = []
+    try:
+        feed = feedparser.parse(url)
+        for e in feed.entries[: n * 2]:
+            title = getattr(e, "title", "").strip()
+            if not title:
+                continue
+            out.append({"title": title, "link": getattr(e, "link", ""),
+                        "published": getattr(e, "published", "")})
+    except Exception:
+        return []
+    return out[:n]
+
+
 def score_headlines_keyword(headlines: list[str], bullish: dict = None,
                             bearish: dict = None) -> NewsResult:
     """Sum weighted keyword hits across headlines -> bounded score + vol bump.

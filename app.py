@@ -474,31 +474,34 @@ if mode == "Metals":
     profile = assets.get(asset_key)
     name, icon = METAL_META[asset_key]
 else:
-    if "stock_raw" not in st.session_state:
-        st.session_state["stock_raw"] = "Apple"
-    raw = st.text_input("Enter a company name or ticker (e.g. Netflix, or NFLX)",
-                        max_chars=40, key="stock_raw").strip()
-    if not raw:
-        st.info("Type a company name (like Netflix) or a ticker (like NFLX) to begin.")
-        st.stop()
-    _tk, _suggest = mp.resolve_symbol(raw)
-    if _tk is None:
-        if _suggest:
-            st.warning(f"Couldn't find **{raw}**. Did you mean:")
-            _cols = st.columns(min(4, len(_suggest)))
-            for _i, (_stk, _snm) in enumerate(_suggest):
-                if _cols[_i % len(_cols)].button(f"{_stk} · {_snm}", key=f"sg_{_stk}",
+    # searchable dropdown — click it and type letters to filter, like Google
+    _opts = sorted(mp.TICKER_NAME.keys(), key=lambda t: mp.TICKER_NAME[t].lower())
+    _labelf = lambda t: f"{mp.TICKER_NAME[t]}  ·  {t}"
+    _default = _opts.index("AAPL") if "AAPL" in _opts else 0
+    picked = st.selectbox("Search a company or ticker (type letters to filter)",
+                          _opts, index=_default, format_func=_labelf,
+                          key="stock_pick")
+    stock_ticker = picked
+    with st.expander("Not in the list? Type any ticker or name here"):
+        typed = st.text_input("e.g. an uncommon symbol or full company name",
+                              key="stock_typed").strip()
+        if typed:
+            _tk, _sug = mp.resolve_symbol(typed)
+            if _tk:
+                stock_ticker = _tk
+                st.success(f"Using **{_tk}** — {mp.ticker_name(_tk)}")
+            elif _sug:
+                st.warning("Closest matches — tap one:")
+                _cc = st.columns(min(4, len(_sug)))
+                for _i, (_stk, _snm) in enumerate(_sug):
+                    if _cc[_i % len(_cc)].button(f"{_stk} · {_snm}", key=f"tsg_{_stk}",
                                                  use_container_width=True):
-                    st.session_state["stock_raw"] = _stk
-                    st.rerun()
-            st.caption("Tap a match above, or fix the spelling.")
-        else:
-            st.info(f"No match for **{raw}**. Try a ticker like AAPL, or a company "
-                    f"name like 'Microsoft' or 'Coca-Cola'.")
-        st.stop()
-    stock_ticker = _tk
-    if raw.upper() != _tk:
-        st.caption(f"Showing **{_tk}** — {mp.ticker_name(_tk)}")
+                        st.session_state["stock_typed"] = _stk
+                        st.rerun()
+                st.caption(f"(Or continuing with **{picked}** from the dropdown.)")
+            else:
+                st.info(f"No match for '{typed}'. Using the dropdown pick "
+                        f"(**{picked}**).")
     profile = assets.stock_profile(stock_ticker)
     name, icon = stock_ticker, "📈"
 
@@ -653,6 +656,25 @@ if simple:
     downs = sum(1 for it in ind["list"] if it["signal"] < 0)
     st.caption(f"Scoreboard of signals: **{ups} point up**, **{downs} point down**, "
                f"{ind_total - ups - downs} neutral.")
+
+    # ---- 📅 next earnings + 📰 latest news ----
+    if res.get("earnings_date"):
+        st.markdown(f"#### 📅 Next earnings: **{res['earnings_date']}**")
+        st.caption("Prices often swing hard right after earnings — many traders "
+                   "avoid holding a surprise over that date, or size down into it.")
+    _news = res.get("news_items") or []
+    if _news:
+        st.markdown("#### 📰 Latest news")
+        for it in _news[:5]:
+            title = it.get("title", "")
+            link = it.get("link", "")
+            if link:
+                st.markdown(f"- [{title}]({link})")
+            else:
+                st.markdown(f"- {title}")
+        st.caption("Headlines move stocks in seconds — by the time news reaches "
+                   "here it's usually already in the price. Use this to understand "
+                   "*why* it's moving, not to beat the move.")
 
     # ---- 3) the simple plan ----
     if plan and plan.get("direction") != "WAIT":
