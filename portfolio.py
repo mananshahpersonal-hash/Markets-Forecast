@@ -124,7 +124,10 @@ def classify_row(instrument, description, code) -> str:
     if inst in ("NAN", "NONE"):
         inst = ""
     code = str(code or "").upper().strip()
-    if code in DIV_CODES or "dividend" in d:
+    # Dividends by CODE ONLY. Do NOT match the word "dividend" in the description —
+    # ETF names like "Schwab US Dividend Equity ETF" (SCHD) would wrongly turn a
+    # BUY of that fund into dividend income.
+    if code in DIV_CODES:
         return "dividend"
     if code in CASH_CODES or (not inst and code not in OPT_CODES):
         return "cash"

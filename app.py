@@ -552,34 +552,79 @@ if mode == "My Portfolio (CSV)":
     pos, rz, dv = P["positions"], P["realized"], P["dividends"]
     now = _dt.datetime.utcnow()
 
-    price_syms = {i: pfm.yahoo_symbol(i, p["class"]) for i, p in pos.items()
-                  if p["shares"] > 1e-9 and pfm.yahoo_symbol(i, p["class"])}
+    # ---- CURRENT HOLDINGS you can correct (the CSV can't rebuild shares through
+    # options assignments, a broker migration, or splits — so let the user fix them) ----
+    st.markdown("### ✏️ Your current holdings")
+    st.caption("The CSV can't perfectly rebuild share counts for accounts with "
+               "options, transfers between brokers, or splits — so **correct any "
+               "share counts here to match Robinhood** (type over them). This is "
+               "saved and remembered, and everything below uses these numbers.")
+    if "pf_holdings" not in st.session_state:
+        saved = None
+        try:
+            storage.pull("pfhold")
+            _hp = mp.STATE_DIR / "pfhold_data.csv"
+            if _hp.exists():
+                saved = pd.read_csv(_hp)
+        except Exception:
+            saved = None
+        if saved is not None and len(saved):
+            st.session_state["pf_holdings"] = saved
+        else:                       # seed from the CSV's best guess (stocks/ETFs/crypto)
+            seed = [{"Ticker": i, "Shares": round(p["shares"], 4)}
+                    for i, p in pos.items()
+                    if p["class"] in ("Stocks & ETFs", "Crypto") and p["shares"] > 1e-9]
+            st.session_state["pf_holdings"] = pd.DataFrame(
+                sorted(seed, key=lambda r: -r["Shares"]) or [{"Ticker": "", "Shares": 0.0}])
+    edited = st.data_editor(st.session_state["pf_holdings"], num_rows="dynamic",
+                            use_container_width=True, key="pf_hold_editor",
+                            column_config={"Shares": st.column_config.NumberColumn(format="%.4g")})
+    _hc1, _hc2 = st.columns([1, 3])
+    if _hc1.button("💾 Save holdings", use_container_width=True):
+        st.session_state["pf_holdings"] = edited
+        try:
+            mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
+            edited.to_csv(mp.STATE_DIR / "pfhold_data.csv", index=False)
+            storage.push("pfhold")
+            _hc2.success("Saved — these are remembered across visits.")
+        except Exception:
+            _hc2.info("Saved for this session.")
+    holdings = {str(r["Ticker"]).upper().strip(): float(r["Shares"])
+                for _, r in edited.iterrows()
+                if str(r.get("Ticker", "")).strip() and float(r.get("Shares", 0) or 0) > 0}
+    # infer class per ticker (crypto vs stock) from the CSV where known
+    cls_of = {i: p["class"] for i, p in pos.items()}
+    price_syms, sym_cls = {}, {}
+    for t in holdings:
+        c = cls_of.get(t, "Crypto" if t in pfm.CRYPTO else "Stocks & ETFs")
+        sym_cls[t] = c
+        s = pfm.yahoo_symbol(t, c)
+        if s:
+            price_syms[t] = s
     closes = {}
     if price_syms:
         with st.spinner("Fetching live prices for your holdings…"):
             _batch = mp._batch_close_series(sorted(set(price_syms.values())), chunk=40)
-        closes = {i: _batch.get(s) for i, s in price_syms.items()}
+        closes = {t: _batch.get(s) for t, s in price_syms.items()}
 
     total_val, unreal = 0.0, 0.0
     win = {"today": 0.0, "week": 0.0, "month": 0.0, "ytd": 0.0}
     rows, hseries = [], {}
-    for inst, p in pos.items():
-        if p["shares"] <= 1e-9:
-            continue
+    for inst, shares in holdings.items():
         c = closes.get(inst)
+        cls = sym_cls.get(inst, "Stocks & ETFs")
         if c is None or len(c) < 2:
-            rows.append({"inst": inst, "class": p["class"], "shares": p["shares"],
-                         "cost": p["cost"], "value": None, "unreal": None})
+            rows.append({"inst": inst, "class": cls, "shares": shares,
+                         "value": None, "unreal": None})
             continue
         w = pfm.market_windows(c, now)
-        val = p["shares"] * w["now"]
+        val = shares * w["now"]
         total_val += val
-        unreal += val - p["cost"]
         for k in win:
-            win[k] += p["shares"] * (w["now"] - w[k])
-        rows.append({"inst": inst, "class": p["class"], "shares": p["shares"],
-                     "cost": p["cost"], "value": val, "unreal": val - p["cost"]})
-        hseries[inst] = c.tail(400) * p["shares"]
+            win[k] += shares * (w["now"] - w[k])
+        rows.append({"inst": inst, "class": cls, "shares": shares, "value": val,
+                     "unreal": None})
+        hseries[inst] = c.tail(400) * shares
     rz_sums = (pfm.period_sums(rz, "gain", now) if not rz.empty
                else {k: 0.0 for k in ("today", "week", "month", "ytd", "all")})
     dv_sums = pfm.period_sums(dv, "amount", now)
@@ -644,28 +689,28 @@ if mode == "My Portfolio (CSV)":
 
     st.markdown("### 🧺 By investment type")
     classes = {}
-    for inst, p in pos.items():
-        d = classes.setdefault(p["class"], {"value": 0.0, "unreal": 0.0,
-                                            "cash": 0.0, "realized": 0.0})
-        r = next((x for x in rows if x["inst"] == inst), None)
-        if r and r["value"] is not None:
+    for r in rows:
+        d = classes.setdefault(r["class"], {"value": 0.0, "realized": 0.0, "cash": 0.0})
+        if r["value"] is not None:
             d["value"] += r["value"]
-            d["unreal"] += r["unreal"]
-        d["cash"] += p.get("net_cash", 0.0)
+    for inst, p in pos.items():        # futures/options net cash from the CSV
+        if p["class"] in ("Futures", "Options"):
+            classes.setdefault(p["class"], {"value": 0.0, "realized": 0.0,
+                                            "cash": 0.0})["cash"] += p.get("net_cash", 0.0)
     if not rz.empty:
         for cls, g in rz.groupby("class")["gain"].sum().items():
-            classes.setdefault(cls, {"value": 0.0, "unreal": 0.0, "cash": 0.0,
-                                     "realized": 0.0})["realized"] = float(g)
+            classes.setdefault(cls, {"value": 0.0, "realized": 0.0,
+                                     "cash": 0.0})["realized"] = float(g)
     tblc = []
     for cls, d in classes.items():
         rl = d["realized"] + (d["cash"] if cls in ("Futures", "Options") else 0.0)
         tblc.append({"Type": cls, "Value now": f"${d['value']:,.0f}",
-                     "Unrealized": f"${d['unreal']:+,.0f}",
-                     "Realized": f"${rl:+,.0f}"})
+                     "Realized (from CSV)": f"${rl:+,.0f}"})
     if tblc:
         st.table(pd.DataFrame(tblc).set_index("Type"))
-        st.caption("Futures & options are shown by their net cash result — your "
-                   "copper/gold futures land here.")
+        st.caption("Value now = your live holdings. Realized = closed-trade cash from "
+                   "the CSV (options premium, futures, sold stock). Futures & options "
+                   "show as net cash — your copper/gold futures land here.")
 
     st.markdown("### 📋 Holdings")
     tblp = []
@@ -673,7 +718,7 @@ if mode == "My Portfolio (CSV)":
         wgt = r["value"] / total_val * 100 if total_val else 0
         tblp.append({"Ticker": r["inst"], "Type": r["class"],
                      "Shares": f"{r['shares']:g}", "Value": f"${r['value']:,.0f}",
-                     "Gain": f"${r['unreal']:+,.0f}", "Weight": f"{wgt:.0f}%"})
+                     "Weight": f"{wgt:.0f}%"})
     if tblp:
         st.table(pd.DataFrame(tblp).set_index("Ticker"))
         _big = [t["Ticker"] for t in tblp if float(t["Weight"].rstrip("%")) >= 30]
@@ -681,6 +726,9 @@ if mode == "My Portfolio (CSV)":
             st.warning("⚠️ **Concentration:** " + ", ".join(_big) + " is over 30% of "
                        "your portfolio — one bad day there moves everything. "
                        "Spreading out is the cheapest protection there is.")
+        st.caption("Gain-since-purchase isn't shown because your cost basis can't be "
+                   "rebuilt reliably through the broker transfer + options history. "
+                   "Value, weights, and income above are still accurate.")
 
     st.markdown("### 💵 Dividends")
     d1, d2, d3 = st.columns(3)
@@ -688,13 +736,13 @@ if mode == "My Portfolio (CSV)":
     d2.metric("This year", f"${dv_sums['ytd']:,.2f}")
     d3.metric("All time (in file)", f"${dv_sums['all']:,.2f}")
     proj = 0.0
-    for inst, p in pos.items():
-        if p["class"] != "Stocks & ETFs" or p["shares"] <= 0:
+    for inst, shares in holdings.items():
+        if sym_cls.get(inst) != "Stocks & ETFs":
             continue
         try:
             rate = (cf.yf.Ticker(inst).info or {}).get("dividendRate")
             if rate:
-                proj += float(rate) * p["shares"]
+                proj += float(rate) * shares
         except Exception:
             pass
     if proj > 0:
