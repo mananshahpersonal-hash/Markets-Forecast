@@ -482,23 +482,57 @@ if mode == "My Portfolio (CSV)":
         st.stop()
     st.caption("Upload the report CSV you export from Robinhood. It's read right "
                "here to compute your numbers — never share your login with any app. "
-               "Re-upload a fresh export anytime to refresh everything.")
+               "Your last CSV is **remembered** (saved to your private store) until "
+               "you upload a new one or tap Forget.")
+    # restore the last saved CSV once per session
+    if "pf" not in st.session_state and not st.session_state.get("pf_restore_tried"):
+        st.session_state["pf_restore_tried"] = True
+        try:
+            storage.pull("pfcsv")
+            _pth = mp.STATE_DIR / "pfcsv_data.csv"
+            if _pth.exists():
+                st.session_state["pf"] = pfm.analyze(pfm.parse_csv(_pth.read_text()))
+                st.session_state["pf_name"] = "your saved CSV"
+        except Exception:
+            pass
     up = st.file_uploader("Upload your Robinhood report (CSV)", type=["csv"])
-    if up is None and "pf" not in st.session_state:
+    if up is not None:
+        _k = f"{up.name}:{up.size}"
+        if st.session_state.get("pf_key") != _k:
+            try:
+                _txt = up.getvalue().decode("utf-8", errors="ignore")
+                st.session_state["pf"] = pfm.analyze(pfm.parse_csv(_txt))
+                st.session_state["pf_key"] = _k
+                st.session_state["pf_name"] = up.name
+                try:                       # remember it for next time
+                    mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
+                    (mp.STATE_DIR / "pfcsv_data.csv").write_text(_txt)
+                    storage.push("pfcsv")
+                except Exception:
+                    pass
+            except Exception as e:
+                st.error(f"Couldn't read that CSV: {e}")
+                st.stop()
+    if "pf" in st.session_state:
+        _ca, _cb = st.columns([3, 1])
+        _ca.caption(f"📎 Loaded: **{st.session_state.get('pf_name', 'your CSV')}** — "
+                    f"remembered across visits until you replace it.")
+        if _cb.button("🗑️ Forget saved CSV", use_container_width=True):
+            try:
+                for _f in mp.STATE_DIR.glob("pfcsv_*"):
+                    _f.unlink()
+                storage.delete("pfcsv")
+            except Exception:
+                pass
+            for _kk in ("pf", "pf_key", "pf_name"):
+                st.session_state.pop(_kk, None)
+            st.rerun()
+    if "pf" not in st.session_state:
         st.info("**How to export:** robinhood.com (desktop) → account menu → "
                 "**Settings → Reports & statements → Generate report** → pick your "
                 "date range (start from when you began investing) → **CSV**. Then "
                 "drop the file here.")
         st.stop()
-    if up is not None:
-        _k = f"{up.name}:{up.size}"
-        if st.session_state.get("pf_key") != _k:
-            try:
-                st.session_state["pf"] = pfm.analyze(pfm.parse_csv(up.getvalue()))
-                st.session_state["pf_key"] = _k
-            except Exception as e:
-                st.error(f"Couldn't read that CSV: {e}")
-                st.stop()
     P = st.session_state["pf"]
     pos, rz, dv = P["positions"], P["realized"], P["dividends"]
     now = _dt.datetime.utcnow()

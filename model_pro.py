@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v18 · 2026-08-29 · My Portfolio tab (Robinhood CSV): P&L, dividends, IL tax estimate"
+BUILD = "v20 · 2026-08-29 · portfolio CSV remembered across visits + Forget button"
 
 warnings.filterwarnings("ignore")
 
@@ -94,16 +94,25 @@ def fmtp(p) -> str:
 # DATA
 # =============================================================================
 
+_DOLLAR_CACHE = {"tk": None}
+
+
 def fetch_dollar_index() -> pd.Series:
-    """Daily US Dollar Index. Returns empty series on any failure."""
+    """Daily US Dollar Index with fallbacks. Yahoo killed DX=F, so we try the
+    ICE index (DX-Y.NYB) first, then the UUP dollar ETF, then DX=F as a last
+    resort — and remember which one worked so we stop hammering dead symbols."""
     if cf.yf is None:
         return pd.Series(dtype=float)
-    for tk in ("DX=F", "DX-Y.NYB"):
+    order = [t for t in (_DOLLAR_CACHE["tk"], "DX-Y.NYB", "UUP", "DX=F") if t]
+    seen = set()
+    order = [t for t in order if not (t in seen or seen.add(t))]
+    for tk in order:
         try:
             df = cf.yf.download(tk, period="3y", interval="1d",
                                 auto_adjust=False, progress=False)
             s = cf._close_series(df)
-            if not s.empty:
+            if s is not None and not s.empty:
+                _DOLLAR_CACHE["tk"] = tk
                 return s
         except Exception:
             continue
