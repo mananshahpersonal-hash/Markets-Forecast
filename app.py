@@ -16,6 +16,12 @@ import copper_forecaster as cf
 import model_pro as mp
 import assets
 import storage
+import datetime as _dt
+
+try:
+    import portfolio as pfm
+except Exception:
+    pfm = None
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -112,7 +118,8 @@ with st.expander("❓ New here? What does this app do? (tap to read)"):
 
 mode = st.radio("What do you want to look at?",
                 ["Metals", "Stocks", "Overview (all at once)",
-                 "Top & Bottom (scan)", "Stock Ideas (screens)"], horizontal=True)
+                 "Top & Bottom (scan)", "Stock Ideas (screens)",
+                 "My Portfolio (CSV)"], horizontal=True)
 
 # ===================== 🔴 LIVE MODE + pinned strong-signal ALERT =============
 REFRESH_MIN = 5
@@ -464,6 +471,202 @@ if mode == "Stock Ideas (screens)":
                "goals and risk tolerance. Fundamentals come from Yahoo's free data "
                "and may be delayed or incomplete. Open the Stocks tab for the full "
                "plan on any ticker.")
+    st.stop()
+
+# ===================== 💼 MY PORTFOLIO — Robinhood CSV =======================
+if mode == "My Portfolio (CSV)":
+    st.title("💼 My Portfolio")
+    if pfm is None:
+        st.error("`portfolio.py` is missing from the app files — re-upload **all** "
+                 "files (including the new `portfolio.py`) to your repo, then reboot.")
+        st.stop()
+    st.caption("Upload the report CSV you export from Robinhood. It's read right "
+               "here to compute your numbers — never share your login with any app. "
+               "Re-upload a fresh export anytime to refresh everything.")
+    up = st.file_uploader("Upload your Robinhood report (CSV)", type=["csv"])
+    if up is None and "pf" not in st.session_state:
+        st.info("**How to export:** robinhood.com (desktop) → account menu → "
+                "**Settings → Reports & statements → Generate report** → pick your "
+                "date range (start from when you began investing) → **CSV**. Then "
+                "drop the file here.")
+        st.stop()
+    if up is not None:
+        _k = f"{up.name}:{up.size}"
+        if st.session_state.get("pf_key") != _k:
+            try:
+                st.session_state["pf"] = pfm.analyze(pfm.parse_csv(up.getvalue()))
+                st.session_state["pf_key"] = _k
+            except Exception as e:
+                st.error(f"Couldn't read that CSV: {e}")
+                st.stop()
+    P = st.session_state["pf"]
+    pos, rz, dv = P["positions"], P["realized"], P["dividends"]
+    now = _dt.datetime.utcnow()
+
+    price_syms = {i: pfm.yahoo_symbol(i, p["class"]) for i, p in pos.items()
+                  if p["shares"] > 1e-9 and pfm.yahoo_symbol(i, p["class"])}
+    closes = {}
+    if price_syms:
+        with st.spinner("Fetching live prices for your holdings…"):
+            _batch = mp._batch_close_series(sorted(set(price_syms.values())), chunk=40)
+        closes = {i: _batch.get(s) for i, s in price_syms.items()}
+
+    total_val, unreal = 0.0, 0.0
+    win = {"today": 0.0, "week": 0.0, "month": 0.0, "ytd": 0.0}
+    rows, hseries = [], {}
+    for inst, p in pos.items():
+        if p["shares"] <= 1e-9:
+            continue
+        c = closes.get(inst)
+        if c is None or len(c) < 2:
+            rows.append({"inst": inst, "class": p["class"], "shares": p["shares"],
+                         "cost": p["cost"], "value": None, "unreal": None})
+            continue
+        w = pfm.market_windows(c, now)
+        val = p["shares"] * w["now"]
+        total_val += val
+        unreal += val - p["cost"]
+        for k in win:
+            win[k] += p["shares"] * (w["now"] - w[k])
+        rows.append({"inst": inst, "class": p["class"], "shares": p["shares"],
+                     "cost": p["cost"], "value": val, "unreal": val - p["cost"]})
+        hseries[inst] = c.tail(120) * p["shares"]
+    rz_sums = (pfm.period_sums(rz, "gain", now) if not rz.empty
+               else {k: 0.0 for k in ("today", "week", "month", "ytd", "all")})
+    dv_sums = pfm.period_sums(dv, "amount", now)
+    for k in win:
+        win[k] += rz_sums[k] + dv_sums[k]
+
+    st.markdown("### 💰 Right now")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Portfolio value", f"${total_val:,.0f}")
+    m2.metric("Today", f"${win['today']:+,.0f}")
+    m3.metric("This week", f"${win['week']:+,.0f}")
+    m4.metric("This month", f"${win['month']:+,.0f}")
+    m5.metric("This year", f"${win['ytd']:+,.0f}")
+    st.caption("Live prices for stocks & crypto (futures/options appear below as "
+               "realized cash). Turn on **🔴 Live mode** at the top and these refresh "
+               "every ~5 minutes. Window P&L = price moves on current holdings + "
+               "realized gains + dividends in the window — a good estimate, not to "
+               "the penny.")
+    if hseries:
+        _hdf = pd.DataFrame(hseries).ffill()
+        _tot = _hdf.sum(axis=1).dropna().tail(90)
+        if len(_tot) > 5:
+            st.line_chart(_tot, height=180)
+            st.caption("Your portfolio value over the last ~90 days (current holdings).")
+
+    st.markdown("### 🧺 By investment type")
+    classes = {}
+    for inst, p in pos.items():
+        d = classes.setdefault(p["class"], {"value": 0.0, "unreal": 0.0,
+                                            "cash": 0.0, "realized": 0.0})
+        r = next((x for x in rows if x["inst"] == inst), None)
+        if r and r["value"] is not None:
+            d["value"] += r["value"]
+            d["unreal"] += r["unreal"]
+        d["cash"] += p.get("net_cash", 0.0)
+    if not rz.empty:
+        for cls, g in rz.groupby("class")["gain"].sum().items():
+            classes.setdefault(cls, {"value": 0.0, "unreal": 0.0, "cash": 0.0,
+                                     "realized": 0.0})["realized"] = float(g)
+    tblc = []
+    for cls, d in classes.items():
+        rl = d["realized"] + (d["cash"] if cls in ("Futures", "Options") else 0.0)
+        tblc.append({"Type": cls, "Value now": f"${d['value']:,.0f}",
+                     "Unrealized": f"${d['unreal']:+,.0f}",
+                     "Realized": f"${rl:+,.0f}"})
+    if tblc:
+        st.table(pd.DataFrame(tblc).set_index("Type"))
+        st.caption("Futures & options are shown by their net cash result — your "
+                   "copper/gold futures land here.")
+
+    st.markdown("### 📋 Holdings")
+    tblp = []
+    for r in sorted([x for x in rows if x["value"]], key=lambda x: -x["value"]):
+        wgt = r["value"] / total_val * 100 if total_val else 0
+        tblp.append({"Ticker": r["inst"], "Type": r["class"],
+                     "Shares": f"{r['shares']:g}", "Value": f"${r['value']:,.0f}",
+                     "Gain": f"${r['unreal']:+,.0f}", "Weight": f"{wgt:.0f}%"})
+    if tblp:
+        st.table(pd.DataFrame(tblp).set_index("Ticker"))
+        _big = [t["Ticker"] for t in tblp if float(t["Weight"].rstrip("%")) >= 30]
+        if _big:
+            st.warning("⚠️ **Concentration:** " + ", ".join(_big) + " is over 30% of "
+                       "your portfolio — one bad day there moves everything. "
+                       "Spreading out is the cheapest protection there is.")
+
+    st.markdown("### 💵 Dividends")
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Last 30 days", f"${dv_sums['month']:,.2f}")
+    d2.metric("This year", f"${dv_sums['ytd']:,.2f}")
+    d3.metric("All time (in file)", f"${dv_sums['all']:,.2f}")
+    proj = 0.0
+    for inst, p in pos.items():
+        if p["class"] != "Stocks & ETFs" or p["shares"] <= 0:
+            continue
+        try:
+            rate = (cf.yf.Ticker(inst).info or {}).get("dividendRate")
+            if rate:
+                proj += float(rate) * p["shares"]
+        except Exception:
+            pass
+    if proj > 0:
+        st.markdown(f"**Projected income at current rates:** ~**${proj:,.0f}/year** "
+                    f"(≈ ${proj/12:,.0f}/month · ${proj/52:,.0f}/week).")
+    st.caption("Honest note: dividends don't arrive daily — each stock pays "
+               "quarterly or monthly on its own schedule, so a true 'per-day' amount "
+               "would be made up. The weekly/monthly numbers are the fair way to "
+               "see it. Rates come from the free feed and are approximate.")
+
+    st.markdown("### 🧾 Illinois tax ESTIMATE — not tax advice")
+    t1, t2, t3, t4 = st.columns(4)
+    fed = t1.selectbox("Your federal bracket %", [10, 12, 22, 24, 32, 35, 37], index=3) / 100
+    ltr = t2.selectbox("Long-term rate %", [0, 15, 20], index=1) / 100
+    niit = t3.checkbox("Add NIIT 3.8%", value=False,
+                       help="Applies if income > ~$200k single / $250k joint")
+    ilr = t4.number_input("IL rate %", value=4.95, step=0.05) / 100
+    qual = st.checkbox("Treat dividends as qualified (long-term rate)", value=True)
+    _st = float(rz.loc[rz.term == "ST", "gain"].sum()) if not rz.empty else 0.0
+    _lt = float(rz.loc[rz.term == "LT", "gain"].sum()) if not rz.empty else 0.0
+    _fut = sum(p.get("net_cash", 0.0) for p in pos.values()
+               if p["class"] in ("Futures", "Options"))
+    st.caption(f"From your file: short-term realized **${_st:+,.0f}** · long-term "
+               f"realized **${_lt:+,.0f}** · futures/options net **${_fut:+,.0f}** · "
+               f"dividends YTD **${dv_sums['ytd']:,.0f}**. (Futures have special "
+               f"60/40 tax treatment — ask a CPA; not estimated below.)")
+    tax = pfm.tax_estimate(_st, _lt, dv_sums["ytd"], fed, ltr, niit, ilr, qual)
+    e1, e2 = st.columns(2)
+    with e1:
+        st.markdown("**Estimated tax on YTD realized gains + dividends:**  \n"
+                    f"Federal short-term: **${tax['fed_st']:,.0f}**  \n"
+                    f"Federal long-term: **${tax['fed_lt']:,.0f}**  \n"
+                    f"Federal on dividends: **${tax['fed_div']:,.0f}**  \n"
+                    + (f"NIIT: **${tax['fed_niit']:,.0f}**  \n" if niit else "")
+                    + f"Illinois (flat): **${tax['il']:,.0f}**  \n"
+                    f"**Total ≈ ${tax['total']:,.0f}**")
+    with e2:
+        days = max((now - _dt.datetime(now.year, 1, 1)).days, 1)
+        st.markdown("**Year-end projection (same pace):**  \n"
+                    f"≈ **${tax['total']*365/days:,.0f}** for the full year.")
+        st.caption("Straight-line projection — real life won't be straight-line.")
+    st.error("**Estimates only.** Your real bill depends on your salary, filing "
+             "status, deductions, wash sales, and futures' special rules — none of "
+             "which are in a brokerage CSV. Use this for planning; use a CPA for "
+             "filing. This is not tax or investment advice.")
+    with st.expander("💡 Ways people legally reduce investment taxes (educational)"):
+        st.markdown(
+            "- **Hold winners 1+ year** — federal drops from your bracket (up to 37%) "
+            "to 0/15/20%. Illinois is 4.95% either way, so the lever is federal.\n"
+            "- **Tax-loss harvesting** — selling losers offsets gains (plus up to "
+            "$3,000 vs ordinary income). Beware the **wash-sale rule**: don't rebuy "
+            "the same thing within 30 days.\n"
+            "- **Tax-advantaged accounts** — 401(k) / IRA / Roth / HSA shield gains "
+            "entirely.\n"
+            "- **Time big sales** for lower-income years when you can.\n"
+            "- **Big gain? Make estimated payments** — large sales aren't withheld, "
+            "and the IRS + Illinois can charge penalties if you wait for April.\n\n"
+            "*Educational, not advice — a CPA can tell you which apply to you.*")
     st.stop()
 
 asset_key = stock_ticker = None
