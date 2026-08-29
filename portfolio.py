@@ -55,14 +55,41 @@ _HEADER_MAP = {
 
 def parse_csv(data) -> pd.DataFrame:
     """Read a Robinhood CSV (bytes/str/file) into a normalized DataFrame with
-    columns: date, instrument, description, code, qty, price, amount."""
+    columns: date, instrument, description, code, qty, price, amount.
+    Robust to real-world exports: finds the header row even if junk precedes it,
+    and skips malformed lines (extra commas, footer disclaimers) instead of
+    crashing — the skipped count is reported in df.attrs['skipped']."""
     if isinstance(data, (bytes, bytearray)):
-        raw = pd.read_csv(io.BytesIO(bytes(data)))
+        text = bytes(data).decode("utf-8", errors="ignore")
     elif isinstance(data, str):
-        raw = pd.read_csv(io.StringIO(data))
+        text = data
     else:
-        raw = pd.read_csv(data)
-    cols = {c.lower().strip(): c for c in raw.columns}
+        blob = data.read()
+        text = blob.decode("utf-8", errors="ignore") if isinstance(blob, (bytes, bytearray)) else str(blob)
+    lines = text.splitlines()
+    hdr_idx = 0
+    for i, ln in enumerate(lines[:25]):
+        low = ln.lower()
+        if "activity date" in low or ("date" in low and "amount" in low):
+            hdr_idx = i
+            break
+    body = "\n".join(lines[hdr_idx:])
+    skipped: list = []
+
+    def _bad(line):
+        skipped.append(line)
+        return None
+
+    try:
+        raw = pd.read_csv(io.StringIO(body))
+    except Exception:
+        try:
+            raw = pd.read_csv(io.StringIO(body), engine="python", on_bad_lines=_bad)
+        except TypeError:                       # very old pandas: no callable form
+            raw = pd.read_csv(io.StringIO(body), engine="python",
+                              on_bad_lines="skip")
+    raw = raw.loc[:, [c for c in raw.columns if not str(c).startswith("Unnamed")]]
+    cols = {str(c).lower().strip(): c for c in raw.columns}
     picked = {}
     for want, options in _HEADER_MAP.items():
         for o in options:
@@ -71,7 +98,8 @@ def parse_csv(data) -> pd.DataFrame:
                 break
     if "date" not in picked or "amount" not in picked:
         raise ValueError(
-            "Couldn't recognize the CSV columns. Found: " + ", ".join(raw.columns))
+            "Couldn't recognize the CSV columns. Found: "
+            + ", ".join(str(c) for c in raw.columns))
     df = pd.DataFrame()
     df["date"] = pd.to_datetime(raw[picked["date"]], errors="coerce")
     df["instrument"] = (raw[picked["instrument"]].astype(str).str.strip().str.upper()
@@ -85,6 +113,8 @@ def parse_csv(data) -> pd.DataFrame:
     df["amount"] = raw[picked["amount"]].map(_num)
     df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
     df["instrument"] = df["instrument"].replace({"NAN": "", "NONE": ""})
+    df.attrs["skipped"] = len(skipped)
+    df.attrs["skipped_lines"] = skipped[:3]
     return df
 
 
@@ -156,7 +186,9 @@ def analyze(tx: pd.DataFrame) -> dict:
     dividends = tx[tx["class"] == "dividend"][["date", "instrument", "amount"]].copy()
     rz = pd.DataFrame(realized) if realized else pd.DataFrame(
         columns=["date", "instrument", "gain", "term", "class"])
-    return {"tx": tx, "positions": positions, "realized": rz, "dividends": dividends}
+    return {"tx": tx, "positions": positions, "realized": rz, "dividends": dividends,
+            "n_rows": int(len(tx)), "skipped": int(tx.attrs.get("skipped", 0)),
+            "skipped_lines": list(tx.attrs.get("skipped_lines", []))}
 
 
 def period_sums(df: pd.DataFrame, col: str, now: dt.datetime) -> dict:

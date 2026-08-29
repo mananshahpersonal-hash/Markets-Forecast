@@ -515,8 +515,14 @@ if mode == "My Portfolio (CSV)":
                 st.stop()
     if "pf" in st.session_state:
         _ca, _cb = st.columns([3, 1])
+        _P0 = st.session_state["pf"]
         _ca.caption(f"📎 Loaded: **{st.session_state.get('pf_name', 'your CSV')}** — "
-                    f"remembered across visits until you replace it.")
+                    f"{_P0.get('n_rows', '?')} transactions read — remembered across "
+                    f"visits until you replace it.")
+        if _P0.get("skipped"):
+            st.warning(f"⚠️ Skipped **{_P0['skipped']}** unreadable line(s) (usually "
+                       f"the footer or a stray comma). If a trade seems missing from "
+                       f"the numbers, paste that line to me and I'll adapt the reader.")
         if _cb.button("🗑️ Forget saved CSV", use_container_width=True):
             try:
                 for _f in mp.STATE_DIR.glob("pfcsv_*"):
