@@ -474,11 +474,31 @@ if mode == "Metals":
     profile = assets.get(asset_key)
     name, icon = METAL_META[asset_key]
 else:
-    stock_ticker = st.text_input("Enter any stock ticker", value="AAPL",
-                                 max_chars=8).upper().strip()
-    if not stock_ticker:
-        st.info("Type a ticker (e.g. AAPL, MSFT, NVDA, TSLA) to begin.")
+    if "stock_raw" not in st.session_state:
+        st.session_state["stock_raw"] = "Apple"
+    raw = st.text_input("Enter a company name or ticker (e.g. Netflix, or NFLX)",
+                        max_chars=40, key="stock_raw").strip()
+    if not raw:
+        st.info("Type a company name (like Netflix) or a ticker (like NFLX) to begin.")
         st.stop()
+    _tk, _suggest = mp.resolve_symbol(raw)
+    if _tk is None:
+        if _suggest:
+            st.warning(f"Couldn't find **{raw}**. Did you mean:")
+            _cols = st.columns(min(4, len(_suggest)))
+            for _i, (_stk, _snm) in enumerate(_suggest):
+                if _cols[_i % len(_cols)].button(f"{_stk} · {_snm}", key=f"sg_{_stk}",
+                                                 use_container_width=True):
+                    st.session_state["stock_raw"] = _stk
+                    st.rerun()
+            st.caption("Tap a match above, or fix the spelling.")
+        else:
+            st.info(f"No match for **{raw}**. Try a ticker like AAPL, or a company "
+                    f"name like 'Microsoft' or 'Coca-Cola'.")
+        st.stop()
+    stock_ticker = _tk
+    if raw.upper() != _tk:
+        st.caption(f"Showing **{_tk}** — {mp.ticker_name(_tk)}")
     profile = assets.stock_profile(stock_ticker)
     name, icon = stock_ticker, "📈"
 

@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v14 · 2026-08-22 · buy + sell alert lists, reconciled with the scan"
+BUILD = "v15 · 2026-08-22 · smart search: company names + typo suggestions"
 
 warnings.filterwarnings("ignore")
 
@@ -1160,6 +1160,121 @@ def _read_from_daily(cfg: dict, profile: dict, daily) -> dict:
             "ind_bear": ind["bear"], "rsi": ind.get("rsi"),
             "trend_up": trend_up, "trend_dn": trend_dn, "trend_pct": trend_pct,
             "overbought": overext_up, "oversold": overext_down}
+
+
+# ---- smart ticker resolver: accept company names + fix typos + suggest --------
+TICKER_NAME = {
+    "AAPL": "Apple", "MSFT": "Microsoft", "NVDA": "Nvidia", "AMZN": "Amazon",
+    "GOOGL": "Alphabet (Google)", "GOOG": "Alphabet (Google)", "META": "Meta (Facebook)",
+    "TSLA": "Tesla", "AVGO": "Broadcom", "AMD": "AMD", "INTC": "Intel", "MU": "Micron",
+    "QCOM": "Qualcomm", "ORCL": "Oracle", "CRM": "Salesforce", "ADBE": "Adobe",
+    "CSCO": "Cisco", "IBM": "IBM", "NFLX": "Netflix", "DIS": "Disney", "CMCSA": "Comcast",
+    "TMUS": "T-Mobile", "VZ": "Verizon", "T": "AT&T", "DELL": "Dell", "HPQ": "HP",
+    "PYPL": "PayPal", "V": "Visa", "MA": "Mastercard", "AXP": "American Express",
+    "JPM": "JPMorgan Chase", "BAC": "Bank of America", "WFC": "Wells Fargo",
+    "GS": "Goldman Sachs", "MS": "Morgan Stanley", "C": "Citigroup", "BLK": "BlackRock",
+    "BRK.B": "Berkshire Hathaway", "SCHW": "Charles Schwab", "COF": "Capital One",
+    "XOM": "ExxonMobil", "CVX": "Chevron", "COP": "ConocoPhillips", "SLB": "SLB",
+    "WMT": "Walmart", "COST": "Costco", "TGT": "Target", "HD": "Home Depot",
+    "LOW": "Lowe's", "NKE": "Nike", "MCD": "McDonald's", "SBUX": "Starbucks",
+    "KO": "Coca-Cola", "PEP": "PepsiCo", "PG": "Procter & Gamble", "CL": "Colgate",
+    "MDLZ": "Mondelez", "KHC": "Kraft Heinz", "MO": "Altria", "PM": "Philip Morris",
+    "UNH": "UnitedHealth", "JNJ": "Johnson & Johnson", "LLY": "Eli Lilly",
+    "ABBV": "AbbVie", "MRK": "Merck", "PFE": "Pfizer", "TMO": "Thermo Fisher",
+    "ABT": "Abbott", "DHR": "Danaher", "BMY": "Bristol Myers Squibb", "AMGN": "Amgen",
+    "GILD": "Gilead", "CVS": "CVS Health", "MDT": "Medtronic", "ISRG": "Intuitive Surgical",
+    "BA": "Boeing", "CAT": "Caterpillar", "GE": "GE Aerospace", "HON": "Honeywell",
+    "UPS": "UPS", "FDX": "FedEx", "LMT": "Lockheed Martin", "RTX": "RTX (Raytheon)",
+    "DE": "John Deere", "MMM": "3M", "UNP": "Union Pacific", "GM": "General Motors",
+    "F": "Ford", "TRV": "Travelers", "EMR": "Emerson", "GD": "General Dynamics",
+    "LIN": "Linde", "NEE": "NextEra Energy", "DUK": "Duke Energy", "SO": "Southern Co",
+    "AMT": "American Tower", "PLTR": "Palantir", "UBER": "Uber", "ABNB": "Airbnb",
+    "SHOP": "Shopify", "SQ": "Block (Square)", "COIN": "Coinbase", "SNOW": "Snowflake",
+    "DDOG": "Datadog", "CRWD": "CrowdStrike", "PANW": "Palo Alto Networks", "NOW": "ServiceNow",
+    "MRVL": "Marvell", "SMCI": "Super Micro", "ARM": "Arm", "MSTR": "MicroStrategy",
+    "NKE": "Nike", "LULU": "Lululemon", "CVNA": "Carvana", "RIVN": "Rivian", "LCID": "Lucid",
+    "SOFI": "SoFi", "HOOD": "Robinhood", "GME": "GameStop", "AMC": "AMC",
+    "SPY": "S&P 500 ETF", "QQQ": "Nasdaq-100 ETF", "DIA": "Dow ETF", "IWM": "Russell 2000 ETF",
+}
+_NAME_ALIASES = {
+    "google": "GOOGL", "alphabet": "GOOGL", "facebook": "META", "meta platforms": "META",
+    "coke": "KO", "coca cola": "KO", "pepsi": "PEP", "j&j": "JNJ", "johnson": "JNJ",
+    "amazon.com": "AMZN", "berkshire": "BRK.B", "berkshire hathaway": "BRK.B",
+    "att": "T", "at and t": "T", "tmobile": "TMUS", "t mobile": "TMUS",
+    "raytheon": "RTX", "deere": "DE", "john deere": "DE", "square": "SQ", "block": "SQ",
+    "exxon": "XOM", "exxonmobil": "XOM", "chevron": "CVX", "lilly": "LLY", "eli lilly": "LLY",
+    "united health": "UNH", "unitedhealthcare": "UNH", "p&g": "PG", "procter and gamble": "PG",
+    "3m": "MMM", "ge": "GE", "general electric": "GE", "microsoft corp": "MSFT",
+    "apple inc": "AAPL", "nvidia corp": "NVDA", "tesla motors": "TSLA", "the trade desk": "TTD",
+    "micro strategy": "MSTR", "super micro": "SMCI", "palo alto": "PANW",
+}
+_COMPANY_TO_TICKER = {v.lower(): k for k, v in TICKER_NAME.items()}
+_COMPANY_TO_TICKER.update(_NAME_ALIASES)
+# strip parentheticals so "alphabet (google)" also matches "alphabet"
+for _tk, _nm in list(TICKER_NAME.items()):
+    _base = _nm.split("(")[0].strip().lower()
+    _COMPANY_TO_TICKER.setdefault(_base, _tk)
+KNOWN_TICKERS = set(TICKER_NAME) | set(DEFAULT_SCAN_STOCKS)
+
+
+def ticker_name(tk: str) -> str:
+    return TICKER_NAME.get(tk.upper(), tk.upper())
+
+
+def _yahoo_search(q: str) -> list:
+    """Best-effort live symbol search (Yahoo autocomplete). Returns [(sym, name)].
+    Never raises; short timeout so it can't hang the app."""
+    try:
+        import requests
+        r = requests.get("https://query2.finance.yahoo.com/v1/finance/search",
+                         params={"q": q, "quotesCount": 6, "newsCount": 0},
+                         timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200:
+            out = []
+            for it in r.json().get("quotes", []):
+                sym = it.get("symbol")
+                nm = it.get("shortname") or it.get("longname") or sym
+                if sym and it.get("quoteType") in ("EQUITY", "ETF"):
+                    out.append((sym, nm))
+            return out
+    except Exception:
+        pass
+    return []
+
+
+def resolve_symbol(query: str):
+    """Turn a user's text into a ticker. Returns (ticker_or_None, suggestions),
+    where suggestions is a list of (ticker, name). Handles company names, fixes
+    typos via fuzzy match, and offers predictive suggestions."""
+    import difflib
+    q = (query or "").strip()
+    if not q:
+        return None, []
+    ql, qup = q.lower(), q.upper()
+    if ql in _COMPANY_TO_TICKER:                 # exact company name / alias
+        return _COMPANY_TO_TICKER[ql], []
+    if qup in KNOWN_TICKERS:                      # exact known ticker
+        return qup, []
+    sugg = []
+    for nm in difflib.get_close_matches(ql, list(_COMPANY_TO_TICKER.keys()), n=6, cutoff=0.7):
+        sugg.append((_COMPANY_TO_TICKER[nm], ticker_name(_COMPANY_TO_TICKER[nm])))
+    for nm, tk in _COMPANY_TO_TICKER.items():     # substring (predictive) match
+        if len(ql) >= 2 and ql in nm:
+            sugg.append((tk, ticker_name(tk)))
+    for tk in difflib.get_close_matches(qup, list(KNOWN_TICKERS), n=5, cutoff=0.75):
+        sugg.append((tk, ticker_name(tk)))
+    if not sugg:                                  # nothing local — try live search
+        sugg = _yahoo_search(q)
+    seen, ded = set(), []
+    for tk, nm in sugg:
+        if tk not in seen:
+            seen.add(tk)
+            ded.append((tk, nm))
+    sugg = ded[:8]
+    # a plausible ticker we simply don't have listed → let them try it directly
+    if not sugg and qup.isalpha() and 1 <= len(qup) <= 5:
+        return qup, []
+    return None, sugg
 
 
 def strong_trend_signal(r) -> Optional[str]:
