@@ -897,8 +897,45 @@ if simple:
     # ---- 📅 next earnings + 📰 latest news ----
     if res.get("earnings_date"):
         st.markdown(f"#### 📅 Next earnings: **{res['earnings_date']}**")
-        st.caption("Prices often swing hard right after earnings — many traders "
-                   "avoid holding a surprise over that date, or size down into it.")
+        _edays = None
+        try:
+            _edays = ( _dt.datetime.strptime(res["earnings_date"], "%b %d, %Y")
+                       - _dt.datetime.utcnow()).days
+        except Exception:
+            pass
+        if _edays is not None and 0 <= _edays <= 7:
+            st.warning(f"⚠️ **Earnings in ~{_edays} day(s).** Prices often jump or "
+                       f"drop hard on the report — a surprise can blow straight "
+                       f"through a stop. Many traders size down or wait until after.")
+        else:
+            st.caption("Prices often swing hard right after earnings — many traders "
+                       "avoid holding a surprise over that date, or size down into it.")
+
+    # ---- 🔬 more signals: analysts, options positioning, social buzz ----
+    _an, _op, _so = res.get("analyst"), res.get("options_pos"), res.get("social")
+    if _an or _op or _so:
+        st.markdown("#### 🔬 More signals (context — not crystal balls)")
+        if _an:
+            _t = _an.get("target")
+            _ups = (f" ({(_t/spot-1)*100:+.0f}% vs now)" if (_t and spot) else "")
+            _nn = f" · ~{_an['n']} analysts" if _an.get("n") else ""
+            st.markdown(f"🧑‍💼 **Wall St analysts:** {_an['rating']}"
+                        f"{' · avg target $' + fmtp(_t) + _ups if _t else ''}{_nn}")
+        if _op:
+            _pc = _op["pc"]
+            _read = ("more bets on **down** (put-heavy)" if _pc > 1.3 else
+                     "more bets on **up** (call-heavy)" if _pc < 0.7 else
+                     "roughly balanced")
+            st.markdown(f"🎯 **Options positioning:** put/call ratio "
+                        f"**{_pc:.2f}** — {_read} (nearest expiry {_op['expiry']})")
+        if _so:
+            st.markdown(f"💬 **Social buzz (StockTwits):** {_so['msgs']} recent posts "
+                        f"— {_so['bull']} bullish / {_so['bear']} bearish")
+        st.caption("These come from free feeds and are often missing or noisy. "
+                   "Analysts lag price, options positioning is a rough read (real "
+                   "'flow' data is paid), and crowd buzz is famously unreliable — "
+                   "use them as context, never as the reason to bet.")
+
     _news = res.get("news_items") or []
     if _news:
         st.markdown("#### 📰 Latest news")

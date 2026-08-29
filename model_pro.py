@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v20 · 2026-08-29 · portfolio CSV remembered across visits + Forget button"
+BUILD = "v21 · 2026-08-29 · analysts + options positioning + social buzz + earnings countdown"
 
 warnings.filterwarnings("ignore")
 
@@ -1259,6 +1259,59 @@ def _yahoo_search(q: str) -> list:
     return []
 
 
+# ---- extra context signals (free feeds; best-effort, never raise) ----------
+def analyst_view(ticker: str):
+    """Wall Street consensus from the free feed: rating, avg price target, count."""
+    try:
+        info = cf.yf.Ticker(ticker).info or {}
+        rating = (info.get("recommendationKey") or "").replace("_", " ").title()
+        tgt = info.get("targetMeanPrice")
+        n = info.get("numberOfAnalystOpinions")
+        if not rating and not tgt:
+            return None
+        return {"rating": rating or "n/a", "target": tgt, "n": n}
+    except Exception:
+        return None
+
+
+def options_positioning(ticker: str):
+    """Put/call open-interest ratio on the nearest expiry — a rough read of how
+    options traders are positioned. NOT real-time 'flow' (that's paid data)."""
+    try:
+        tk = cf.yf.Ticker(ticker)
+        exps = tk.options
+        if not exps:
+            return None
+        ch = tk.option_chain(exps[0])
+        calls = float(pd.to_numeric(ch.calls["openInterest"], errors="coerce").fillna(0).sum())
+        puts = float(pd.to_numeric(ch.puts["openInterest"], errors="coerce").fillna(0).sum())
+        if calls <= 0:
+            return None
+        return {"pc": puts / calls, "expiry": str(exps[0])}
+    except Exception:
+        return None
+
+
+def social_buzz(ticker: str):
+    """Recent StockTwits chatter: post count + tagged bullish/bearish split.
+    Free public feed; noisy by nature, sometimes unavailable. Never raises."""
+    try:
+        import requests
+        r = requests.get(
+            f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json",
+            timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return None
+        msgs = (r.json() or {}).get("messages", []) or []
+        def _sent(m):
+            return (((m.get("entities") or {}).get("sentiment") or {}) or {}).get("basic")
+        bull = sum(1 for m in msgs if _sent(m) == "Bullish")
+        bear = sum(1 for m in msgs if _sent(m) == "Bearish")
+        return {"msgs": len(msgs), "bull": bull, "bear": bear}
+    except Exception:
+        return None
+
+
 def next_earnings(ticker: str):
     """Best-effort next earnings date for a stock. Returns a display string or
     None. yfinance's calendar/info are flaky, so this is wrapped and never raises."""
@@ -1958,6 +2011,12 @@ def run_prediction(cfg: dict, asset_key: str = "copper",
         "news_items": cf.fetch_news_items(profile["news_query"], 6),
         "earnings_date": (next_earnings(profile["ticker"])
                           if profile["kind"] == "stock" else None),
+        "analyst": (analyst_view(profile["ticker"])
+                    if profile["kind"] == "stock" else None),
+        "options_pos": (options_positioning(profile["ticker"])
+                        if profile["kind"] == "stock" else None),
+        "social": (social_buzz(profile["ticker"])
+                   if profile["kind"] == "stock" else None),
         "prev_close": (float(daily.iloc[-2]) if len(daily) >= 2 else None),
         "asset_key": asset_key, "asset_name": profile["name"],
         "kind": profile["kind"], "state_key": state_key,
