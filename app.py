@@ -122,81 +122,82 @@ mode = st.radio("What do you want to look at?",
                  "My Portfolio (CSV)"], horizontal=True)
 
 # ===================== 🔴 LIVE MODE + pinned strong-signal ALERT =============
+live = st.session_state.get("live_mode", False)
 REFRESH_MIN = 5
-lc1, lc2, lc3 = st.columns([1.1, 1.2, 1])
-with lc1:
-    live = st.toggle("🔴 Live mode", value=st.session_state.get("live_mode", False),
-                     key="live_mode", help="Auto-refreshes every 5 minutes while the "
-                     "app is open, re-checking prices, news and strong signals.")
-with lc2:
-    check_now = st.button("🚨 Check for strong signals now", use_container_width=True)
-with lc3:
-    if live:
-        if HAVE_AUTOREFRESH:
-            st_autorefresh(interval=REFRESH_MIN * 60 * 1000, key="live_tick")
-            st.caption(f"🔴 LIVE · every {REFRESH_MIN} min")
-        else:
-            st.caption("Add-on missing — use the button to refresh.")
+if mode != "My Portfolio (CSV)":
+    lc1, lc2, lc3 = st.columns([1.1, 1.2, 1])
+    with lc1:
+        live = st.toggle("🔴 Live mode", value=st.session_state.get("live_mode", False),
+                         key="live_mode", help="Auto-refreshes every 5 minutes while the "
+                         "app is open, re-checking prices, news and strong signals.")
+    with lc2:
+        check_now = st.button("🚨 Check for strong signals now", use_container_width=True)
+    with lc3:
+        if live:
+            if HAVE_AUTOREFRESH:
+                st_autorefresh(interval=REFRESH_MIN * 60 * 1000, key="live_tick")
+                st.caption(f"🔴 LIVE · every {REFRESH_MIN} min")
+            else:
+                st.caption("Add-on missing — use the button to refresh.")
 
-# decide whether to (re)run the background alert scan (cache ~10 min)
-_now = time.time()
-_last = st.session_state.get("alert_ts")
-need_alert = check_now or ("alert_reads" not in st.session_state)
-if live and (_last is None or (_now - _last) > 10 * 60):
-    need_alert = True
-if need_alert:
-    with st.spinner("Scanning the market for strong signals…"):
-        _cfg = cf.load_config(str(cf.HERE / "config.yaml"))
-        try:
-            st.session_state["alert_reads"] = mp.quick_universe_reads(_cfg, mp.ALERT_UNIVERSE)
-        except Exception:
-            st.session_state["alert_reads"] = st.session_state.get("alert_reads", [])
-        st.session_state["alert_ts"] = _now
+    # decide whether to (re)run the background alert scan (cache ~10 min)
+    _now = time.time()
+    _last = st.session_state.get("alert_ts")
+    need_alert = check_now or ("alert_reads" not in st.session_state)
+    if live and (_last is None or (_now - _last) > 10 * 60):
+        need_alert = True
+    if need_alert:
+        with st.spinner("Scanning the market for strong signals…"):
+            _cfg = cf.load_config(str(cf.HERE / "config.yaml"))
+            try:
+                st.session_state["alert_reads"] = mp.quick_universe_reads(_cfg, mp.ALERT_UNIVERSE)
+            except Exception:
+                st.session_state["alert_reads"] = st.session_state.get("alert_reads", [])
+            st.session_state["alert_ts"] = _now
 
-_reads = st.session_state.get("alert_reads", [])
-_sbuys = sorted([r for r in _reads if mp.strong_trend_signal(r) == "BUY"],
-                key=lambda r: r.get("trend_pct", 0), reverse=True)
-_ssells = sorted([r for r in _reads if mp.strong_trend_signal(r) == "SELL"],
-                 key=lambda r: r.get("trend_pct", 0))
-
-
-def _sig_line(r, kind):
-    arrow = "▲" if kind == "buy" else "▼"
-    return (f"**{r['name']}** — ${fmtp(r['spot'])} · {arrow} {r.get('trend_pct', 0):+.0f}% "
-            f"over 3mo · {r['ind_bull']}▲/{r['ind_bear']}▼ · next-wk odds "
-            f"{r['p_up']*100:.0f}%")
+    _reads = st.session_state.get("alert_reads", [])
+    _sbuys = sorted([r for r in _reads if mp.strong_trend_signal(r) == "BUY"],
+                    key=lambda r: r.get("trend_pct", 0), reverse=True)
+    _ssells = sorted([r for r in _reads if mp.strong_trend_signal(r) == "SELL"],
+                     key=lambda r: r.get("trend_pct", 0))
 
 
-if _sbuys:
-    st.markdown(
-        "<div style='background:#0F6E56;color:white;border-radius:10px;"
-        "padding:14px 18px;font-size:17px;'>🚨🟢 <b>STRONG BUY SETUPS (uptrend "
-        "momentum)</b></div>", unsafe_allow_html=True)
-    for r in _sbuys[:10]:
-        st.markdown("🟢 " + _sig_line(r, "buy"))
-    st.caption("Flagged for a strong **3-month uptrend** (above key averages, not "
-               "overextended) — a momentum edge that plays out over weeks-to-months. "
-               "The near-50% next-week odds are honest: short-term is still a coin "
-               "flip; the trend is the edge. Odds, not a promise — use a stop.")
-if _ssells:
-    st.markdown(
-        "<div style='background:#A32D2D;color:white;border-radius:10px;"
-        "padding:14px 18px;font-size:17px;margin-top:8px;'>🚨🔴 <b>STRONG SELL / "
-        "AVOID (downtrend momentum)</b></div>", unsafe_allow_html=True)
-    for r in _ssells[:10]:
-        st.markdown("🔴 " + _sig_line(r, "sell"))
-    st.caption("In a strong **3-month downtrend** (below key averages, not yet "
-               "oversold) — momentum is against these; a heads-up if you hold them. "
-               "**Not advice.** Odds, not certainty.")
-if not _sbuys and not _ssells:
-    ts = st.session_state.get("alert_ts")
-    when = time.strftime("%H:%M", time.localtime(ts)) if ts else "—"
-    st.info(f"✅ No strong buy or sell setups right now (checked {when}). That's the "
-            f"honest, healthy default — clean, strong trends are the exception, not "
-            f"the rule. {'Live mode keeps watching.' if live else 'Turn on Live mode to keep watching.'}")
+    def _sig_line(r, kind):
+        arrow = "▲" if kind == "buy" else "▼"
+        return (f"**{r['name']}** — ${fmtp(r['spot'])} · {arrow} {r.get('trend_pct', 0):+.0f}% "
+                f"over 3mo · {r['ind_bull']}▲/{r['ind_bear']}▼ · next-wk odds "
+                f"{r['p_up']*100:.0f}%")
 
-st.divider()
 
+    if _sbuys:
+        st.markdown(
+            "<div style='background:#0F6E56;color:white;border-radius:10px;"
+            "padding:14px 18px;font-size:17px;'>🚨🟢 <b>STRONG BUY SETUPS (uptrend "
+            "momentum)</b></div>", unsafe_allow_html=True)
+        for r in _sbuys[:10]:
+            st.markdown("🟢 " + _sig_line(r, "buy"))
+        st.caption("Flagged for a strong **3-month uptrend** (above key averages, not "
+                   "overextended) — a momentum edge that plays out over weeks-to-months. "
+                   "The near-50% next-week odds are honest: short-term is still a coin "
+                   "flip; the trend is the edge. Odds, not a promise — use a stop.")
+    if _ssells:
+        st.markdown(
+            "<div style='background:#A32D2D;color:white;border-radius:10px;"
+            "padding:14px 18px;font-size:17px;margin-top:8px;'>🚨🔴 <b>STRONG SELL / "
+            "AVOID (downtrend momentum)</b></div>", unsafe_allow_html=True)
+        for r in _ssells[:10]:
+            st.markdown("🔴 " + _sig_line(r, "sell"))
+        st.caption("In a strong **3-month downtrend** (below key averages, not yet "
+                   "oversold) — momentum is against these; a heads-up if you hold them. "
+                   "**Not advice.** Odds, not certainty.")
+    if not _sbuys and not _ssells:
+        ts = st.session_state.get("alert_ts")
+        when = time.strftime("%H:%M", time.localtime(ts)) if ts else "—"
+        st.info(f"✅ No strong buy or sell setups right now (checked {when}). That's the "
+                f"honest, healthy default — clean, strong trends are the exception, not "
+                f"the rule. {'Live mode keeps watching.' if live else 'Turn on Live mode to keep watching.'}")
+
+    st.divider()
 # ===================== 📊 OVERVIEW — all metals + your stocks at a glance ====
 if mode == "Overview (all at once)":
     st.title("📊 Overview — everything at a glance")
@@ -480,6 +481,14 @@ if mode == "My Portfolio (CSV)":
         st.error("`portfolio.py` is missing from the app files — re-upload **all** "
                  "files (including the new `portfolio.py`) to your repo, then reboot.")
         st.stop()
+    _pc1, _pc2 = st.columns([1, 2])
+    with _pc1:
+        pf_live = st.toggle("🔴 Live updates", value=st.session_state.get("live_mode", False),
+                            key="live_mode", help="Refreshes prices & your chart every "
+                            "5 minutes while the app is open.")
+    if pf_live and HAVE_AUTOREFRESH:
+        st_autorefresh(interval=5 * 60 * 1000, key="pf_tick")
+        _pc2.caption("🔴 LIVE · updating every 5 min")
     st.caption("Upload the report CSV you export from Robinhood. It's read right "
                "here to compute your numbers — never share your login with any app. "
                "Your last CSV is **remembered** (saved to your private store) until "
@@ -570,7 +579,7 @@ if mode == "My Portfolio (CSV)":
             win[k] += p["shares"] * (w["now"] - w[k])
         rows.append({"inst": inst, "class": p["class"], "shares": p["shares"],
                      "cost": p["cost"], "value": val, "unreal": val - p["cost"]})
-        hseries[inst] = c.tail(120) * p["shares"]
+        hseries[inst] = c.tail(400) * p["shares"]
     rz_sums = (pfm.period_sums(rz, "gain", now) if not rz.empty
                else {k: 0.0 for k in ("today", "week", "month", "ytd", "all")})
     dv_sums = pfm.period_sums(dv, "amount", now)
@@ -591,10 +600,47 @@ if mode == "My Portfolio (CSV)":
                "the penny.")
     if hseries:
         _hdf = pd.DataFrame(hseries).ffill()
-        _tot = _hdf.sum(axis=1).dropna().tail(90)
+        _tot = _hdf.sum(axis=1).dropna()
         if len(_tot) > 5:
-            st.line_chart(_tot, height=180)
-            st.caption("Your portfolio value over the last ~90 days (current holdings).")
+            _rng = st.radio("Chart range", ["1W", "1M", "3M", "YTD", "All"],
+                            index=2, horizontal=True, key="pf_range")
+            _tot.index = pd.to_datetime(_tot.index)
+            _t0 = pd.Timestamp(now.date())
+            _cut = {"1W": _t0 - pd.Timedelta(days=7),
+                    "1M": _t0 - pd.Timedelta(days=30),
+                    "3M": _t0 - pd.Timedelta(days=90),
+                    "YTD": pd.Timestamp(now.year, 1, 1),
+                    "All": _tot.index.min()}[_rng]
+            _seg = _tot[_tot.index >= _cut]
+            if len(_seg) < 2:
+                _seg = _tot
+            _chg = float(_seg.iloc[-1] - _seg.iloc[0])
+            _pct = (_chg / _seg.iloc[0] * 100) if _seg.iloc[0] else 0
+            _green = _chg >= 0
+            _col = "#00C805" if _green else "#FF5000"
+            st.markdown(f"<span style='font-size:22px;font-weight:700'>"
+                        f"${_seg.iloc[-1]:,.0f}</span> &nbsp; "
+                        f"<span style='color:{_col};font-weight:600'>"
+                        f"{'▲' if _green else '▼'} ${abs(_chg):,.0f} "
+                        f"({_pct:+.1f}%) · {_rng}</span>", unsafe_allow_html=True)
+            try:
+                import altair as alt
+                _df = _seg.reset_index()
+                _df.columns = ["date", "value"]
+                _base = alt.Chart(_df).encode(
+                    x=alt.X("date:T", axis=alt.Axis(title=None, format="%b %d",
+                                                    labelColor="#9aa", grid=False)),
+                    y=alt.Y("value:Q", axis=alt.Axis(title=None, labelColor="#9aa",
+                                                     grid=False),
+                            scale=alt.Scale(zero=False)))
+                _chart = (_base.mark_area(opacity=0.14, color=_col)
+                          + _base.mark_line(color=_col, strokeWidth=2))
+                st.altair_chart(_chart.properties(height=230), use_container_width=True)
+            except Exception:
+                st.line_chart(_seg, height=200)
+            st.caption("Value of your **current** holdings over the selected range "
+                       "(price history — doesn't include past buys/sells). Turn on "
+                       "🔴 Live updates above to refresh every 5 minutes.")
 
     st.markdown("### 🧺 By investment type")
     classes = {}
