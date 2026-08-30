@@ -56,6 +56,16 @@ def _html(s: str):
     st.markdown(s.replace("$", "&#36;"), unsafe_allow_html=True)
 
 
+def _last_price_store():
+    """Session-persistent map of ticker -> last KNOWN market price. When a feed
+    later fails, we reuse the last real price we ever saw instead of dropping to
+    cost, so P/L is always shown and only goes truly blank if we've never once
+    priced that ticker."""
+    if "_last_px" not in st.session_state:
+        st.session_state["_last_px"] = {}
+    return st.session_state["_last_px"]
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_closes(symbols_tuple):
     """Batched holdings-price fetch, cached 5 min so page reloads during a Yahoo
@@ -653,42 +663,45 @@ if mode == "My Portfolio (CSV)":
     dv = P["dividends"] if P else pd.DataFrame(columns=["date", "instrument", "amount"])
     now = _dt.datetime.utcnow()
 
-    # ---- YOUR CURRENT HOLDINGS (editable, saved) ----
-    st.markdown("### ✏️ Your holdings")
-    st.caption("Pre-filled from your Robinhood positions. Type over shares or average "
-               "cost anytime to keep it exact, add/remove rows, then **Save**. "
-               "Everything below updates from this.")
-    if "pf_holdings" not in st.session_state:
-        saved = None
-        try:
-            storage.pull("pfhold")
-            _hp = mp.STATE_DIR / "pfhold_data.csv"
-            if _hp.exists():
-                saved = pd.read_csv(_hp)
-        except Exception:
+    # ---- YOUR CURRENT HOLDINGS (editable, tucked into an expander) ----
+    # The rich Holdings table lower down is the main view; this editor is only
+    # for changing shares/cost, so it lives in an expander to avoid two big
+    # tables competing for attention.
+    with st.expander("✏️ Edit my holdings (shares & average cost)", expanded=False):
+        st.caption("Pre-filled from your Robinhood positions. Type over shares or "
+                   "average cost, add/remove rows, then **Save**. The live "
+                   "Holdings table below updates from this.")
+        if "pf_holdings" not in st.session_state:
             saved = None
-        if saved is not None and len(saved) and "Avg cost" in saved.columns:
-            st.session_state["pf_holdings"] = saved
-        else:
-            st.session_state["pf_holdings"] = pd.DataFrame(
-                [{"Ticker": t, "Shares": s, "Avg cost": a} for t, s, a in SEED_HOLDINGS])
-    edited = st.data_editor(
-        st.session_state["pf_holdings"], num_rows="dynamic",
-        width='stretch', key="pf_hold_editor",
-        column_config={
-            "Shares": st.column_config.NumberColumn(format="%.4f"),
-            "Avg cost": st.column_config.NumberColumn(format="$%.2f",
-                        help="Your average cost per share (from Robinhood). Leave 0 if unknown.")})
-    _hc1, _hc2 = st.columns([1, 3])
-    if _hc1.button("💾 Save holdings", width='stretch'):
-        st.session_state["pf_holdings"] = edited
-        try:
-            mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
-            edited.to_csv(mp.STATE_DIR / "pfhold_data.csv", index=False)
-            storage.push("pfhold")
-            _hc2.success("Saved — remembered across visits, laptop and phone.")
-        except Exception:
-            _hc2.info("Saved for this session.")
+            try:
+                storage.pull("pfhold")
+                _hp = mp.STATE_DIR / "pfhold_data.csv"
+                if _hp.exists():
+                    saved = pd.read_csv(_hp)
+            except Exception:
+                saved = None
+            if saved is not None and len(saved) and "Avg cost" in saved.columns:
+                st.session_state["pf_holdings"] = saved
+            else:
+                st.session_state["pf_holdings"] = pd.DataFrame(
+                    [{"Ticker": t, "Shares": s, "Avg cost": a} for t, s, a in SEED_HOLDINGS])
+        edited = st.data_editor(
+            st.session_state["pf_holdings"], num_rows="dynamic",
+            width='stretch', key="pf_hold_editor",
+            column_config={
+                "Shares": st.column_config.NumberColumn(format="%.4f"),
+                "Avg cost": st.column_config.NumberColumn(format="$%.2f",
+                            help="Your average cost per share (from Robinhood). Leave 0 if unknown.")})
+        _hc1, _hc2 = st.columns([1, 3])
+        if _hc1.button("💾 Save holdings", width='stretch'):
+            st.session_state["pf_holdings"] = edited
+            try:
+                mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
+                edited.to_csv(mp.STATE_DIR / "pfhold_data.csv", index=False)
+                storage.push("pfhold")
+                _hc2.success("Saved — remembered across visits, laptop and phone.")
+            except Exception:
+                _hc2.info("Saved for this session.")
 
     holdings = {}   # ticker -> (shares, avg_cost)
     for _, r in edited.iterrows():
@@ -747,46 +760,59 @@ if mode == "My Portfolio (CSV)":
         sig = "Hold"
         if pnl is not None and c is not None and len(c) >= 60:
             sig = pnl.signal_from_read(pnl.read_from_closes(c))
-        if (c is None or len(c) < 2) and not q:
-            # No live price from EITHER feed. Fall back to average cost so the
-            # position never silently drops from equity; flag it stale.
-            fallback = avgc if avgc else 0.0
-            val = shares * fallback if fallback else None
-            missing.append(inst)
-            if val is not None:
-                total_val += val
-                total_cost += cost
-                stale_val += val
-            rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
-                         "price": fallback or None, "value": val, "cost": cost,
-                         "tot": 0.0 if val is not None else None,
-                         "totpct": 0.0 if val is not None else None,
-                         "today": 0.0 if val is not None else None,
-                         "signal": "—", "stale": True})
-            continue
+
+        _lastpx = _last_price_store()
+        # Determine the best available price, in priority order:
+        #   1) live quote (Finnhub/Stooq)  2) latest close from history
+        #   3) last price we ever saw this session  4) average cost (last resort)
+        price = None
+        today_move = 0.0
+        is_stale = False
         if q:
-            # Finnhub live price wins (reliable, real-time).
             price = q["price"]
             today_move = q["change"] * shares
-            # For week/month/ytd we still use the Yahoo close series if present.
-            if c is not None and len(c) >= 2:
-                w = pfm.market_windows(c, now)
-                for k in ("week", "month", "ytd"):
-                    win[k] += shares * (price - w[k])
-            win["today"] += today_move
-        else:
+            _lastpx[inst] = price                 # remember it
+        elif c is not None and len(c) >= 2:
             w = pfm.market_windows(c, now)
             price = w["now"]
-            for k in win:
-                win[k] += shares * (price - w[k])
             today_move = shares * (price - w["today"])
+            _lastpx[inst] = price
+        elif inst in _lastpx:
+            price = _lastpx[inst]                 # last known market price
+            is_stale = True                        # not refreshed this load
+        elif avgc:
+            price = avgc                           # never priced — cost as proxy
+            is_stale = True
+
+        if price is None:
+            # Truly no price and no cost: cannot value.
+            rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
+                         "price": None, "value": None, "cost": cost,
+                         "tot": None, "totpct": None, "today": None,
+                         "signal": sig, "stale": True})
+            missing.append(inst)
+            continue
+
         val = shares * price
         total_val += val
         total_cost += cost
+        if is_stale:
+            stale_val += val
+            missing.append(inst)
+        else:
+            for k in ("week", "month", "ytd"):
+                if c is not None and len(c) >= 2:
+                    w = pfm.market_windows(c, now)
+                    win[k] += shares * (price - w[k])
+            win["today"] += today_move
+        # P/L is ALWAYS computed from the best price we have — never blank when
+        # we have any price at all (that was the bug you spotted).
         rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
                      "price": price, "value": val, "cost": cost,
-                     "tot": val - cost, "totpct": (val/cost - 1)*100 if cost else None,
-                     "today": today_move, "signal": sig, "stale": False})
+                     "tot": val - cost if avgc else None,
+                     "totpct": (val/cost - 1)*100 if cost else None,
+                     "today": today_move if not is_stale else 0.0,
+                     "signal": sig, "stale": is_stale})
         if c is not None and len(c) >= 2:
             hseries[inst] = c.tail(400) * shares
     rz_sums = (pfm.period_sums(rz, "gain", now) if not rz.empty
@@ -1095,10 +1121,8 @@ if mode == "My Portfolio (CSV)":
             "Price": (f"${r['price']:,.2f} ⚠️" if _is_stale and r["price"]
                       else f"${r['price']:,.2f}" if r["price"] else "—"),
             "Value": f"${r['value']:,.0f}" if r["value"] is not None else "—",
-            "P/L $": ("(no live px)" if _is_stale else
-                      f"${r['tot']:+,.0f}" if r["avgc"] else "—"),
-            "P/L %": ("—" if _is_stale else
-                      f"{r['totpct']:+.1f}%" if (r["avgc"] and r["totpct"] is not None) else "—"),
+            "P/L $": (f"${r['tot']:+,.0f}" if r["tot"] is not None else "—"),
+            "P/L %": (f"{r['totpct']:+.1f}%" if (r["avgc"] and r["totpct"] is not None) else "—"),
             "Today": ("—" if _is_stale else f"${r['today']:+,.0f}"),
             "Wt": f"{wgt:.0f}%",
             "Signal": {"Buy": "🟢 Buy", "Sell": "🔴 Sell"}.get(r.get("signal"), "⚪ Hold"),
@@ -1130,7 +1154,7 @@ if mode == "My Portfolio (CSV)":
             width='stretch',
             column_config={
                 "Signal": st.column_config.TextColumn(width="small"),
-                "Coming up": st.column_config.TextColumn(width="medium"),
+                "Coming up": st.column_config.TextColumn(width="large"),
             })
         st.caption("**Live** columns (Price, Value, P/L, Today, Signal) refresh "
                    "with the 5-min price cache. **Div/yr · Ex-div · Earnings** come "

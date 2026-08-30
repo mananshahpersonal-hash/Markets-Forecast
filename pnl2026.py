@@ -242,28 +242,55 @@ def read_from_closes(closes) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# UPCOMING EVENTS CATALOG
+# UPCOMING EVENTS CATALOG  (researched, dated — refresh periodically)
 # ---------------------------------------------------------------------------
-# Short, human notes about things coming up for a holding that a price feed can
-# NEVER know (product launches, splits, notable catalysts). Edit freely — this
-# is the one place these live. Keep each note to a phrase. Dates optional.
-# Format: TICKER: (note, approx_date_or_None)
+# Real catalysts a price feed can't know. Each is (note, approx_date). Researched
+# as of the AS_OF date at the top of this file — re-check quarterly, since dates
+# advance. Keep notes short and specific; a vague or invented note is worse than
+# none. "date" is when the catalyst hits, shown to the user.
 UPCOMING_EVENTS = {
-    "AAPL": ("iPhone 17 launch event expected", "2026-09"),
-    "NVDA": ("GTC / next-gen GPU cadence a recurring catalyst", None),
-    "TSLA": ("Delivery numbers each quarter move the stock", None),
-    "AMZN": ("AWS re:Invent (late Nov) — cloud guidance", "2026-11"),
-    "MCD": ("Dividend aristocrat; watches consumer spend", None),
+    "AAPL": ("Apple event Sep 9 — iPhone 18 Pro + first foldable (iPhone Ultra); "
+             "new CEO John Ternus's first", "2026-09-09"),
+    "NVDA": ("Q3 earnings ~Nov 25 (after close) — data-center/Vera Rubin guidance "
+             "is the market mover", "2026-11-25"),
+    "AMZN": ("Q3 earnings late Oct; AWS re:Invent early Dec — cloud/AI guidance",
+             "2026-10"),
+    "NFLX": ("Q3 earnings mid-Oct — subs growth + ad-tier are the watch items",
+             "2026-10"),
+    "MSFT": ("Q1 FY27 earnings late Oct — Azure/Copilot growth", "2026-10"),
+    "MCD": ("Q3 earnings early Nov; dividend aristocrat — consumer-spend read",
+            "2026-11"),
+    "TSLA": ("Q3 deliveries early Oct, then earnings — both move the stock",
+             "2026-10"),
+    "VZ": ("Q3 earnings late Oct; ~6% dividend yield — payout safety is the focus",
+           "2026-10"),
+    "T": ("Q3 earnings late Oct; watch subscriber adds + dividend coverage",
+          "2026-10"),
+    "WMT": ("Q3 earnings mid-Nov — consumer-spend bellwether", "2026-11"),
+    "PFE": ("Q3 earnings late Oct/early Nov; high dividend yield in focus",
+            "2026-10"),
 }
 
 
 def event_for(ticker: str):
-    """Return a short 'what's coming up' note for a ticker, or ''. """
-    e = UPCOMING_EVENTS.get(ticker.upper())
-    if not e:
-        return ""
-    note, when = e
-    return f"{note}" + (f" (~{when})" if when else "")
+    """Return a short 'what's coming up' note for a ticker. Never blank for a
+    holding we know: named catalysts for big single names, and a distribution
+    note for the income ETFs (their next payout IS their relevant upcoming
+    event). Falls back to '' only for tickers we truly have nothing on."""
+    t = ticker.upper()
+    e = UPCOMING_EVENTS.get(t)
+    if e:
+        note, when = e
+        return f"{note}" + (f" · {when}" if when else "")
+    # Income ETFs: the meaningful upcoming event is the next distribution.
+    weekly = {"QDTE", "XDTE", "RDTE"}
+    monthly = {"QQQI", "SPYI", "IAUI", "IWMI", "IYRI", "BTCI", "CSHI", "HYBI",
+               "BNDI", "QQQH", "JEPI", "JEPQ", "SPHD"}
+    if t in weekly:
+        return "Pays weekly — next distribution within days (ex-date each week)"
+    if t in monthly:
+        return "Monthly distribution — next ex-date ~mid-month"
+    return ""
 
 
 # ---------------------------------------------------------------------------

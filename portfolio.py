@@ -213,6 +213,10 @@ def yahoo_symbol(instrument: str, cls: str) -> Optional[str]:
     if cls == "Crypto":
         return f"{instrument}-USD"
     if cls == "Stocks & ETFs":
+        # Yahoo uses a dash for class shares (BRK-B), not a dot (BRK.B), which is
+        # what Robinhood/Finnhub use. Convert so Yahoo stops logging "no data".
+        if instrument.upper() in ("BRK.B", "BRK.A", "BF.B", "BF.A"):
+            return instrument.replace(".", "-")
         return instrument
     return None                       # futures/options: cash-flow only in v1
 
