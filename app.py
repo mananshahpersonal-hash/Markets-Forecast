@@ -42,11 +42,18 @@ except Exception:
 st.set_page_config(page_title="Markets forecast", page_icon="📈", layout="wide")
 
 
+def _md(s: str):
+    """Escape $ for PLAIN markdown so Streamlit's LaTeX doesn't pair them and
+    mangle the text. Use for st.caption/markdown/etc that show dollar amounts."""
+    return s.replace("$", "\\$")
+
+
 def _html(s: str):
-    """Render raw HTML via st.markdown WITHOUT Streamlit's LaTeX processor
-    eating dollar-sign pairs. Any '$' in an HTML string makes Streamlit treat
-    the text between two '$' as math and destroys the markup, so we escape them."""
-    st.markdown(s.replace("$", "\\$"), unsafe_allow_html=True)
+    """Render raw HTML via st.markdown. Inside an HTML block, Streamlit does NOT
+    run its LaTeX processor, so dollar signs are safe as-is — we must NOT
+    backslash-escape them (that would print a literal '\\'). We only guard the
+    rare case of a bare '$' by using the HTML entity, which renders as '$'."""
+    st.markdown(s.replace("$", "&#36;"), unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -796,13 +803,12 @@ if mode == "My Portfolio (CSV)":
     m4.metric("This year (price)", f"${win['ytd']:+,.0f}")
     if missing:
         st.warning(
-            f"⚠️ **{len(missing)} position(s) have no live price right now** "
-            f"({', '.join(missing)}) — Yahoo is likely rate-limiting. To keep your "
-            f"total complete, these are valued at your **average cost** for now "
-            f"(${stale_val:,.0f}, {stale_val/total_val*100:.0f}% of the total). "
-            f"The real value is likely higher; reload in a minute, or add a "
-            f"Finnhub key for a reliable feed. Gain/loss on these shows $0 until a "
-            f"live price returns.")
+            f"⚠️ **{len(missing)} position(s) have no live price this refresh** "
+            f"({', '.join(missing)}). To keep your total complete, these are valued "
+            f"at your **average cost** for now "
+            f"(\\${stale_val:,.0f}, {stale_val/total_val*100:.0f}% of the total) — "
+            f"so the real total is likely a bit higher. This clears as the feeds "
+            f"catch up; gain/loss on these shows \\$0 until a live price returns.")
     st.caption("Value & gains use **live prices** where available; any position "
                "without one falls back to your average cost (flagged above) so it "
                "never silently drops out of the total. 'Today/This year' are price "
@@ -828,11 +834,11 @@ if mode == "My Portfolio (CSV)":
             _pct = (_chg / _seg.iloc[0] * 100) if _seg.iloc[0] else 0
             _green = _chg >= 0
             _col = "#00C805" if _green else "#FF5000"
-            st.markdown(f"<span style='font-size:22px;font-weight:700'>"
-                        f"\\${_seg.iloc[-1]:,.0f}</span> &nbsp; "
-                        f"<span style='color:{_col};font-weight:600'>"
-                        f"{'▲' if _green else '▼'} \\${abs(_chg):,.0f} "
-                        f"({_pct:+.1f}%) · {_rng}</span>", unsafe_allow_html=True)
+            _html(f"<span style='font-size:22px;font-weight:700'>"
+                  f"${_seg.iloc[-1]:,.0f}</span> &nbsp; "
+                  f"<span style='color:{_col};font-weight:600'>"
+                  f"{'▲' if _green else '▼'} ${abs(_chg):,.0f} "
+                  f"({_pct:+.1f}%) · {_rng}</span>")
             try:
                 import altair as alt
                 _df = _seg.reset_index()
@@ -968,11 +974,11 @@ if mode == "My Portfolio (CSV)":
           cL.dataframe(pd.DataFrame(
               [{"Ticker": s.ticker, "Loss": f"−${abs(s.gain):,.0f}"} for s in _los]
               ).set_index("Ticker"), width='stretch', height=min(len(_los)*35+38, 460))
-          st.caption(f"Two positions did the damage: **VKTX −$50,802** and "
+          st.caption(_md(f"Two positions did the damage: **VKTX −$50,802** and "
                      f"**MSTR −$57,293**, both long-term. Everything reconciles to "
                      f"your Robinhood proceeds. Net realized: "
                      f"**${pnl.STOCK_REALIZED_KNOWN.amount:+,.0f}** "
-                     f"(short-term +${pnl.STOCK_ST:,.0f} · long-term ${pnl.STOCK_LT:+,.0f}).")
+                     f"(short-term +${pnl.STOCK_ST:,.0f} · long-term ${pnl.STOCK_LT:+,.0f})."))
           with st.expander("See all 17 with cost basis & term"):
               _srows = [{
                   "Ticker": s.ticker, "Shares": f"{s.shares:g}",
@@ -1150,8 +1156,8 @@ if mode == "My Portfolio (CSV)":
         if rate:
             proj += float(rate) * shares
     if proj > 0:
-        st.markdown(f"**Projected income at current rates:** ~**${proj:,.0f}/year** "
-                    f"(≈ ${proj/12:,.0f}/month · ${proj/52:,.0f}/week).")
+        st.markdown(_md(f"**Projected income at current rates:** ~**${proj:,.0f}/year** "
+                    f"(≈ ${proj/12:,.0f}/month · ${proj/52:,.0f}/week)."))
     st.caption("Honest note: dividends don't arrive daily — each fund pays weekly, "
                "monthly, or quarterly on its own schedule, so a true 'per-day' "
                "amount would be made up. The weekly/monthly figures are the fair "
@@ -1172,20 +1178,20 @@ if mode == "My Portfolio (CSV)":
     _lt = float(rz.loc[rz.term == "LT", "gain"].sum()) if not rz.empty else 0.0
     _fut = sum(p.get("net_cash", 0.0) for p in pos.values()
                if p["class"] in ("Futures", "Options"))
-    st.caption(f"From your file: short-term realized **${_st:+,.0f}** · long-term "
+    st.caption(_md(f"From your file: short-term realized **${_st:+,.0f}** · long-term "
                f"realized **${_lt:+,.0f}** · futures/options net **${_fut:+,.0f}** · "
                f"dividends YTD **${dv_sums['ytd']:,.0f}**. (Futures have special "
-               f"60/40 tax treatment — ask a CPA; not estimated below.)")
+               f"60/40 tax treatment — ask a CPA; not estimated below.)"))
     tax = pfm.tax_estimate(_st, _lt, dv_sums["ytd"], fed, ltr, niit, ilr, qual)
     e1, e2 = st.columns(2)
     with e1:
-        st.markdown("**Estimated tax on YTD realized gains + dividends:**  \n"
+        st.markdown(_md("**Estimated tax on YTD realized gains + dividends:**  \n"
                     f"Federal short-term: **${tax['fed_st']:,.0f}**  \n"
                     f"Federal long-term: **${tax['fed_lt']:,.0f}**  \n"
                     f"Federal on dividends: **${tax['fed_div']:,.0f}**  \n"
                     + (f"NIIT: **${tax['fed_niit']:,.0f}**  \n" if niit else "")
                     + f"Illinois (flat): **${tax['il']:,.0f}**  \n"
-                    f"**Total ≈ ${tax['total']:,.0f}**")
+                    f"**Total ≈ ${tax['total']:,.0f}**"))
     with e2:
         days = max((now - _dt.datetime(now.year, 1, 1)).days, 1)
         st.markdown("**Year-end projection (same pace):**  \n"
@@ -1460,13 +1466,13 @@ if simple:
     # ---- 3) the simple plan ----
     if plan and plan.get("direction") != "WAIT":
         st.markdown("#### 📋 If you want to try a trade")
-        st.markdown(
+        st.markdown(_md(
             f"- 🟢 **Buy** near **${fmtp(plan['entry'])}**\n"
             f"- 🎯 **Take profit** at **${fmtp(plan['target'])}**\n"
             f"- 🛑 **Get out** at **${fmtp(plan['stop'])}** if it goes the wrong way "
             f"— this caps your loss\n"
             f"- ⏰ If nothing happens by **{plan['grades_on'].strftime('%b %d')}**, "
-            f"close it and look again")
+            f"close it and look again"))
         if not plan.get("ev_positive"):
             st.warning("⚠️ The possible reward isn't really worth the risk here. "
                        "Many people would just **skip this one**.")
@@ -1726,9 +1732,9 @@ border-radius:8px;padding:14px 18px;">
         if res["kind"] == "stock":
             shares = int(budget // rpu)
             if shares == 0:
-                st.warning(f"Even **1 share** risks ${rpu:,.2f} to the stop — more "
+                st.warning(_md(f"Even **1 share** risks ${rpu:,.2f} to the stop — more "
                            f"than your ${budget:,.0f} budget. This trade is too big "
-                           f"for that risk limit; lower the size or skip.")
+                           f"for that risk limit; lower the size or skip."))
             else:
                 notional = shares * plan["entry"]
                 afford = int(acct // plan["entry"]) if plan["entry"] > 0 else 0
@@ -1738,27 +1744,27 @@ border-radius:8px;padding:14px 18px;">
                     note = (f" (risk math allows {shares}, but that needs "
                             f"${notional:,.0f}; capped to {afford} to stay "
                             f"unleveraged within your ${acct:,.0f})")
-                st.info(f"➡️ About **{use} shares** (~${use*plan['entry']:,.0f}). "
+                st.info(_md(f"➡️ About **{use} shares** (~${use*plan['entry']:,.0f}). "
                         f"If the stop hits, you lose roughly **${use*rpu:,.0f}** — "
-                        f"~{use*rpu/acct*100:.1f}% of your account.{note}")
+                        f"~{use*rpu/acct*100:.1f}% of your account.{note}"))
         else:
             cs = res.get("contract_size", 1)
             unitname = res["unit"].split("/")[-1]
             rpc = rpu * cs                            # risk per futures contract
             contracts = int(budget // rpc)
             if contracts == 0:
-                st.warning(f"Even **1 contract** risks ~${rpc:,.0f} to the stop "
+                st.warning(_md(f"Even **1 contract** risks ~${rpc:,.0f} to the stop "
                            f"(it controls {cs:,} {unitname} of {name}) — more than "
                            f"your ${budget:,.0f} budget. This futures trade is too "
-                           f"big for that risk limit; skip it or you're over-risking.")
+                           f"big for that risk limit; skip it or you're over-risking."))
             else:
                 notional = contracts * plan["entry"] * cs
-                st.info(f"➡️ About **{contracts} contract(s)** "
+                st.info(_md(f"➡️ About **{contracts} contract(s)** "
                         f"({res['contract_label']}). If the stop hits, you lose "
                         f"roughly **${contracts*rpc:,.0f}** "
                         f"(~{contracts*rpc/acct*100:.1f}% of your account). "
                         f"⚠️ Exposure is ~${notional:,.0f} of {name} — futures are "
-                        f"leveraged, and a gap past your stop can lose more.")
+                        f"leveraged, and a gap past your stop can lose more."))
     st.caption("Sizing caps your loss *if* the stop fills at that price — gaps and "
                "slippage can exceed it. A common rule is risking 1–2% per trade. "
                "Not advice.")

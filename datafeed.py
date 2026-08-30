@@ -69,7 +69,10 @@ def _get(path: str, params: dict, timeout: float = 8.0):
 def finnhub_quote(symbol: str):
     """Return {'price','prev_close','change','pct'} from Finnhub, or None.
     Finnhub /quote returns: c=current, d=change, dp=pct, pc=prev close."""
-    d = _get("/quote", {"symbol": symbol})
+    # Finnhub expects class shares as BRK.B (dot). Yahoo uses BRK-B (dash);
+    # if a dash-form sneaks in, convert it.
+    sym = symbol.replace("-", ".") if symbol.upper() in ("BRK-B", "BRK-A", "BF-B") else symbol
+    d = _get("/quote", {"symbol": sym})
     if not d:
         return None
     c = d.get("c")
@@ -81,18 +84,17 @@ def finnhub_quote(symbol: str):
 
 def finnhub_quotes(symbols) -> dict:
     """Batch of single-symbol quote calls (Finnhub has no true batch on free
-    tier). ~60/min budget is fine for a few dozen holdings. Returns
-    {symbol: quote_dict} for those that resolved; missing ones are simply
-    absent so the caller can fall back per-symbol."""
+    tier). Free tier is ~60/min, so we pace at ~1.1s/call to never trip the
+    limit mid-batch — better to take a few extra seconds than to miss the last
+    9 tickers and value them at cost. Returns {symbol: quote_dict}."""
     out = {}
     if not have_finnhub():
         return out
-    for i, s in enumerate(symbols):
+    for s in symbols:
         q = finnhub_quote(s)
         if q:
             out[s] = q
-        if i % 30 == 29:                          # stay under 60/min comfortably
-            time.sleep(1.0)
+        time.sleep(1.05)                          # ~57/min, safely under the cap
     return out
 
 
