@@ -1,4 +1,7 @@
 # --- one-click dashboard + upgraded model: install all of these ---
+# Python 3.12 is pinned via runtime.txt (Streamlit Cloud). If the platform still
+# forces 3.14 and the app crashes on import, DELETE and REDEPLOY the app choosing
+# Python 3.12 in the "Advanced settings" dialog — that's the reliable pin.
 streamlit>=1.30          # the click-a-button dashboard
 yfinance>=0.2.40         # price + dollar-index data
 pandas>=2.0

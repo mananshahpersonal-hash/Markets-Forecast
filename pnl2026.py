@@ -23,7 +23,11 @@ EVERY LINE CARRIES A `basis` TAG:
     "pending"— known to exist but a required source doc is still missing
 """
 
-from dataclasses import dataclass, field
+from dataclasses import field
+try:
+    from copper_forecaster import dataclass          # 3.14-safe wrapper
+except Exception:
+    from dataclasses import dataclass
 from typing import Optional
 import datetime as _dt
 

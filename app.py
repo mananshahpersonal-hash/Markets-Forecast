@@ -8,9 +8,19 @@ past calls, counts the adjustments it makes, and shows whether it's improving.
 
 Educational. Ranges and odds, not promises. NOT financial advice."""
 import os
+import sys
 import time
+import logging
 import pandas as pd
 import streamlit as st
+
+# --- startup diagnostics: these print to the Streamlit deploy LOGS so we can see
+# what's actually happening (Python version, price-fetch counts) instead of
+# guessing from screenshots. Look for lines tagged [MH] in the log panel. ---
+logging.basicConfig(level=logging.INFO)
+_log = logging.getLogger("market_helper")
+_log.info(f"[MH] starting — Python {sys.version.split()[0]}")
+print(f"[MH] starting — Python {sys.version.split()[0]}", flush=True)
 
 import copper_forecaster as cf
 import model_pro as mp
@@ -141,10 +151,8 @@ def _cached_live_quotes(symbols_tuple):
             to_fetch.append(s)
     _r.shuffle(to_fetch)
     changed = False
+    _ok = _fail = 0
     for s in to_fetch:
-        # NO sleep: the artificial delay was making the loop exceed ~30s and get
-        # cut off at ~29 tickers. Finnhub's 60/min limit easily handles 38 quick
-        # sequential calls (~5-8s total), so we just fetch them all in one pass.
         try:
             q = feed.best_quote(s)
         except Exception:
@@ -155,6 +163,14 @@ def _cached_live_quotes(symbols_tuple):
                        q.get("change", 0.0), q.get("pct", 0.0), now_ts]
             out[s] = q
             changed = True
+            _ok += 1
+        else:
+            _fail += 1
+    try:
+        print(f"[MH] price fetch: {_ok} ok, {_fail} failed; "
+              f"{len(out)}/{len(symbols_tuple)} priced total", flush=True)
+    except Exception:
+        pass
     # Serve any still-missing from disk even if stale (better than cost).
     for s in symbols_tuple:
         if s not in out and s in disk:

@@ -31,7 +31,11 @@ import datetime as dt
 import json
 import math
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import field
+try:
+    from copper_forecaster import dataclass          # 3.14-safe wrapper
+except Exception:
+    from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -57,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v48 · 2026-08-30 · no 429 retry-sleep (fail fast) + auto-rerun fills missing few from session cache"
+BUILD = "v49 · 2026-08-30 · fix Python 3.14 dataclass crash (shim + runtime pin) + startup/fetch logging"
 
 warnings.filterwarnings("ignore")
 

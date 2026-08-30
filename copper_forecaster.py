@@ -45,8 +45,40 @@ import math
 import os
 import sys
 import textwrap
-from dataclasses import dataclass, field
+from dataclasses import dataclass as _dataclass, field
 from pathlib import Path
+
+
+def dataclass(cls=None, **kw):
+    """Wrapper around @dataclass that works around a Python 3.14 regression where
+    dataclass processing crashes with 'NoneType has no attribute __dict__' when
+    the class's module isn't yet registered in sys.modules (which happens under
+    some import orders on Streamlit Cloud). We ensure the module is registered,
+    then delegate to the real dataclass."""
+    def wrap(c):
+        mod = getattr(c, "__module__", None)
+        if mod and sys.modules.get(mod) is None:
+            # register a stand-in so dataclass's sys.modules lookup succeeds
+            import types as _types
+            sys.modules[mod] = _types.ModuleType(mod)
+        try:
+            return _dataclass(c, **kw)
+        except AttributeError:
+            # last-resort: build a minimal init manually so import never crashes
+            ann = getattr(c, "__annotations__", {})
+            def __init__(self, *a, **k):
+                names = list(ann)
+                for i, v in enumerate(a):
+                    setattr(self, names[i], v)
+                for name in names:
+                    if name not in k and not hasattr(self, name):
+                        setattr(self, name, k.get(name, getattr(c, name, None)))
+                for name, v in k.items():
+                    setattr(self, name, v)
+            c.__init__ = __init__
+            return c
+    return wrap if cls is None else wrap(cls)
+
 from typing import Optional
 
 import numpy as np
