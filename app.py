@@ -63,58 +63,62 @@ def _cached_closes(symbols_tuple):
     return mp._batch_close_series(list(symbols_tuple), chunk=40)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_one_quote(symbol):
+    """Single quote, cached 15 min PER SYMBOL, trying Finnhub then Stooq. Caching
+    per-symbol (not one big batch) means each ticker's price is fetched once and
+    reused, so a slow/partial batch never leaves positions unpriced — they fill
+    in across reloads and stay cached. Weekends return Friday's close correctly.
+    Stooq covers the ETFs (QDTE, VXUS, etc.) that Finnhub's free tier misses."""
+    if feed is None:
+        return None
+    try:
+        return feed.best_quote(symbol)
+    except Exception:
+        return None
+
+
 def _cached_live_quotes(symbols_tuple):
-    """Finnhub live quotes for holdings, cached 5 min. Empty dict if no key /
-    Finnhub unavailable, in which case the app uses the Yahoo close series alone.
-    This is what makes prices reliable and non-stale."""
-    if feed is None or not feed.have_finnhub():
-        return {}
-    return feed.finnhub_quotes(list(symbols_tuple))
+    """Assemble live quotes from the per-symbol cache. Each symbol is cached
+    independently for 15 min, spreading calls across loads so the last few
+    tickers never drop to 'stale' the way one big timed batch did."""
+    out = {}
+    if feed is None:
+        return out
+    for s in symbols_tuple:
+        q = _cached_one_quote(s)
+        if q:
+            out[s] = q
+    return out
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_info_bundle(symbols_tuple):
-    """Per-ticker dividend + earnings facts, cached 1 HOUR. These barely change
-    intraday, so caching keeps the every-few-minutes price refresh from firing
-    these extra .info calls — that's what protects the Yahoo limit. Returns
-    {ticker: {div_rate, div_yield, ex_date, earn_date}} (missing → None). If the
-    whole pull comes back empty (Yahoo throttling), we DON'T let that poison the
-    cache for long — the short TTL plus the verified fallback keep the dividend
-    column populated regardless."""
+    """Dividend + earnings facts. To keep the Holdings table rendering FAST and
+    to not compete with the price feed for Finnhub's rate limit, this no longer
+    makes a blocking per-ticker live call on every load. Dividend $/share comes
+    from the verified table (built from your own 2026 payments) via the caller;
+    earnings/ex-div are best-effort from Yahoo only, wrapped so a failure or
+    throttle never blocks the table. Cached 1 hour."""
     import time as _t
     out = {}
     for t in symbols_tuple:
         rec = {"div_rate": None, "div_yield": None, "ex_date": None,
                "earn_date": None}
-        # Finnhub first (reliable), then Yahoo as fallback.
-        if feed is not None and feed.have_finnhub():
-            try:
-                dr = feed.finnhub_basic_dividend(t)
-                if dr:
-                    rec["div_rate"] = dr
-                en = feed.finnhub_next_earnings(t)
-                if en:
-                    import datetime as _d
-                    rec["earn_date"] = _d.date.fromisoformat(en).strftime("%b %d")
-            except Exception:
-                pass
+        # Best-effort earnings/ex-div from Yahoo; short timeout, never fatal.
         try:
             info = cf.yf.Ticker(t).info or {}
-            if rec["div_rate"] is None:
-                rec["div_rate"] = info.get("dividendRate")
-            rec["div_yield"] = info.get("dividendYield")
+            rec["div_rate"] = info.get("dividendRate")
             ex = info.get("exDividendDate")
             if ex:
                 rec["ex_date"] = _dt.datetime.utcfromtimestamp(int(ex)).strftime("%b %d")
-            if rec["earn_date"] is None:
-                es = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
-                if es:
-                    rec["earn_date"] = _dt.datetime.utcfromtimestamp(int(es)).strftime("%b %d")
+            es = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
+            if es:
+                rec["earn_date"] = _dt.datetime.utcfromtimestamp(int(es)).strftime("%b %d")
         except Exception:
             pass
         out[t] = rec
-        _t.sleep(0.15)
+        _t.sleep(0.05)
     return out
 
 
@@ -817,6 +821,13 @@ if mode == "My Portfolio (CSV)":
     if hseries:
         _hdf = pd.DataFrame(hseries).ffill()
         _tot = _hdf.sum(axis=1).dropna()
+        # The history series only covers holdings that HAVE a price history from
+        # the feed; that can be a subset of the portfolio, so its raw level may
+        # be far below your true equity. Scale it so its last point equals the
+        # real live total — this keeps the day-to-day SHAPE while making the
+        # magnitude correct and consistent with the "Right now" value.
+        if len(_tot) > 5 and _tot.iloc[-1] and total_val:
+            _tot = _tot * (total_val / float(_tot.iloc[-1]))
         if len(_tot) > 5:
             _rng = st.radio("Chart range", ["1W", "1M", "3M", "YTD", "All"],
                             index=2, horizontal=True, key="pf_range")
@@ -854,9 +865,12 @@ if mode == "My Portfolio (CSV)":
                 st.altair_chart(_chart.properties(height=230), width='stretch')
             except Exception:
                 st.line_chart(_seg, height=200)
-            st.caption("Value of your **current** holdings over the selected range "
-                       "(price history — doesn't include past buys/sells). Turn on "
-                       "🔴 Live updates above to refresh every 5 minutes.")
+            st.caption("Value of your **current** holdings over the range, scaled "
+                       "so the latest point matches your live total above. The "
+                       "**shape** is price history (it doesn't include past "
+                       "buys/sells), and the endpoint is your real equity. On "
+                       "weekends it holds Friday's close. Turn on 🔴 Live updates "
+                       "to refresh every 5 minutes during market hours.")
 
     st.markdown("### 🧺 By investment type")
     classes = {}

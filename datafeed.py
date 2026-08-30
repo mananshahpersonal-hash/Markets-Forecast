@@ -132,6 +132,38 @@ def finnhub_next_earnings(symbol: str):
     return dates[0] if dates else None
 
 
+def stooq_quote(symbol: str):
+    """Keyless fallback via Stooq CSV (covers most US ETFs and stocks that
+    Finnhub's free tier or a rate-limited Yahoo miss). Returns {'price',...} or
+    None. Stooq uses lowercase '<sym>.us'. Its CSV last row is the most recent
+    close — correct on weekends too."""
+    sym = symbol.lower().replace(".", "-") + ".us"
+    url = f"https://stooq.com/q/d/l/?s={sym}&i=d"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "market-helper/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            rows = r.read().decode().strip().splitlines()
+        if len(rows) < 2:
+            return None
+        last = rows[-1].split(",")          # Date,Open,High,Low,Close,Volume
+        prev = rows[-2].split(",") if len(rows) >= 3 else last
+        close = float(last[4]); pclose = float(prev[4])
+        return {"price": close, "prev_close": pclose,
+                "change": close - pclose,
+                "pct": (close/pclose - 1)*100 if pclose else 0.0}
+    except Exception:
+        return None
+
+
+def best_quote(symbol: str):
+    """Try Finnhub, then Stooq. Returns a quote dict or None. (Yahoo is handled
+    separately via the historical close series.)"""
+    q = finnhub_quote(symbol)
+    if q:
+        return q
+    return stooq_quote(symbol)
+
+
 def source_label() -> str:
     """Human tag for which feed is active, shown in the UI."""
-    return "Finnhub ✓" if have_finnhub() else "Yahoo (no Finnhub key)"
+    return "Finnhub ✓" if have_finnhub() else "Yahoo/Stooq (no Finnhub key)"

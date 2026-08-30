@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v38 · 2026-08-30 · fix $ rendering everywhere + Finnhub throttle so all tickers resolve"
+BUILD = "v39 · 2026-08-30 · per-symbol quote cache + Stooq fallback for ETFs + live-anchored chart"
 
 warnings.filterwarnings("ignore")
 
