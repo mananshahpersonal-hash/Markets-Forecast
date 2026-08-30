@@ -191,16 +191,15 @@ def stockpricesdev_quote(symbol: str):
 
 
 def best_quote(symbol: str):
-    """Get a quote from whichever keyless/low-limit source responds first.
-
-    Order is chosen for COVERAGE and reliability of US stocks AND ETFs:
-      1) stockprices.dev — keyless JSON, no limit, covers stocks + ETFs
-      2) Stooq — keyless CSV, covers stocks + ETFs
-      3) Finnhub — needs key, misses many ETFs on free tier (last resort)
-    Whichever returns a price first wins. Multiple independent sources mean a
-    single provider being down or blocking doesn't leave holdings unpriced —
-    which is what left ~9 tickers stale before."""
-    for src in (stockpricesdev_quote, stooq_quote, finnhub_quote):
+    """Get a quote. Finnhub is the only source reachable from the deploy
+    environment (confirmed by the in-app feed diagnostic: stockprices.dev and
+    Stooq are both blocked there, while Finnhub returns real prices for BOTH
+    stocks and ETFs — e.g. QDTE). So this is Finnhub-only, with the other two
+    kept as defensive fallbacks in case the environment's egress rules change."""
+    q = finnhub_quote(symbol)
+    if q and q.get("price"):
+        return q
+    for src in (stockpricesdev_quote, stooq_quote):
         try:
             q = src(symbol)
             if q and q.get("price"):

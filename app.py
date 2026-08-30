@@ -73,32 +73,47 @@ def _cached_closes(symbols_tuple):
     return mp._batch_close_series(list(symbols_tuple), chunk=40)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def _cached_one_quote(symbol):
-    """Single quote, cached 15 min PER SYMBOL, trying Finnhub then Stooq. Caching
-    per-symbol (not one big batch) means each ticker's price is fetched once and
-    reused, so a slow/partial batch never leaves positions unpriced — they fill
-    in across reloads and stay cached. Weekends return Friday's close correctly.
-    Stooq covers the ETFs (QDTE, VXUS, etc.) that Finnhub's free tier misses."""
-    if feed is None:
-        return None
-    try:
-        return feed.best_quote(symbol)
-    except Exception:
-        return None
+def _quote_cache():
+    """Session store of successful quotes: {symbol: (quote, timestamp)}. Only
+    SUCCESSES are kept, so rate-limited tickers are retried on the next load
+    instead of being cached as failures for 15 minutes (that was why the same 9
+    stayed stale). Quotes older than 15 min are considered refreshable."""
+    if "_quote_store" not in st.session_state:
+        st.session_state["_quote_store"] = {}
+    return st.session_state["_quote_store"]
 
 
 def _cached_live_quotes(symbols_tuple):
-    """Assemble live quotes from the per-symbol cache. Each symbol is cached
-    independently for 15 min, spreading calls across loads so the last few
-    tickers never drop to 'stale' the way one big timed batch did."""
+    """Return {symbol: quote}. Serves fresh cached successes immediately, and
+    each load fetches a bounded number of the still-missing/stale tickers so the
+    portfolio fills in fully within a couple of refreshes without ever tripping
+    Finnhub's per-minute limit. Only successes are stored, so failures retry."""
+    import time as _t
     out = {}
     if feed is None:
         return out
+    store = _quote_cache()
+    now_ts = _t.time()
+    STALE = 900          # refresh a symbol if its cached quote is >15 min old
+    to_fetch = []
     for s in symbols_tuple:
-        q = _cached_one_quote(s)
-        if q:
+        rec = store.get(s)
+        if rec and (now_ts - rec[1]) < STALE:
+            out[s] = rec[0]            # fresh cached success
+        else:
+            to_fetch.append(s)
+    # Fetch the missing/stale ones, paced under the rate limit. Cap per load so a
+    # cold start with 38 symbols spreads across ~2 loads instead of one long hang.
+    MAX_PER_LOAD = 40
+    for i, s in enumerate(to_fetch[:MAX_PER_LOAD]):
+        try:
+            q = feed.best_quote(s)
+        except Exception:
+            q = None
+        if q and q.get("price"):
+            store[s] = (q, now_ts)     # keep only successes
             out[s] = q
+        _t.sleep(0.9)                  # ~66/min ceiling; safely paced
     return out
 
 
@@ -732,18 +747,29 @@ if mode == "My Portfolio (CSV)":
         if feed is not None:
             _n = len(_live_q)
             _tot_syms = len(price_syms)
-            _src = feed.source_label()
             if _n >= _tot_syms:
-                st.success(f"📡 Live prices via **{_src}** — all {_n} holdings "
-                           f"priced. (Weekends show Friday's close.)")
+                st.success(f"📡 **All {_n} holdings priced** via Finnhub. "
+                           f"(Weekends show Friday's close.)")
             elif _n:
-                st.warning(f"📡 Live prices via **{_src}** — {_n} of {_tot_syms} "
-                           f"holdings priced this refresh. The rest use their last "
-                           f"known price; reload once and they fill in (each is "
-                           f"cached as it succeeds).")
+                st.info(f"📡 **{_n} of {_tot_syms} holdings priced** so far. The "
+                        f"rest fill in automatically within a minute — Finnhub's "
+                        f"rate limit means they load a few per refresh, and each "
+                        f"success is kept. Turn on 🔴 Live updates and they'll "
+                        f"complete on their own, or reload once.")
             else:
-                st.error(f"📡 Price feeds unreachable this refresh ({_src}). Using "
-                         f"last known / cost. Reload in a minute.")
+                st.error("📡 No prices returned this refresh. Reload in a minute.")
+            # Auto-complete: if some holdings are still unpriced, quietly rerun
+            # after a short pause to fetch the next batch (each success persists),
+            # until all are priced. Bounded so it can't loop forever.
+            if 0 < len(_live_q) < len(price_syms):
+                _tries = st.session_state.get("_price_fill_tries", 0)
+                if _tries < 6:
+                    st.session_state["_price_fill_tries"] = _tries + 1
+                    import time as _tt
+                    _tt.sleep(2)
+                    st.rerun()
+            else:
+                st.session_state["_price_fill_tries"] = 0
             with st.expander("🔬 Diagnose price feeds (which sources work here?)"):
                 st.caption("Runs a live test of each price source from this app's "
                            "server, on a stock (AAPL) and an ETF (QDTE), so we can "
