@@ -140,11 +140,11 @@ def _cached_live_quotes(symbols_tuple):
         else:
             to_fetch.append(s)
     _r.shuffle(to_fetch)
-    fetched = 0
     changed = False
     for s in to_fetch:
-        if fetched >= 20:            # conservative per-load cap (safe if limit=30/min)
-            break
+        # NO sleep: the artificial delay was making the loop exceed ~30s and get
+        # cut off at ~29 tickers. Finnhub's 60/min limit easily handles 38 quick
+        # sequential calls (~5-8s total), so we just fetch them all in one pass.
         try:
             q = feed.best_quote(s)
         except Exception:
@@ -155,9 +155,7 @@ def _cached_live_quotes(symbols_tuple):
                        q.get("change", 0.0), q.get("pct", 0.0), now_ts]
             out[s] = q
             changed = True
-        fetched += 1
-        _t.sleep(1.1)
-    # Also serve any still-missing from disk even if stale (better than cost).
+    # Serve any still-missing from disk even if stale (better than cost).
     for s in symbols_tuple:
         if s not in out and s in disk:
             v = disk[s]
@@ -169,32 +167,13 @@ def _cached_live_quotes(symbols_tuple):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_info_bundle(symbols_tuple):
-    """Dividend + earnings facts. To keep the Holdings table rendering FAST and
-    to not compete with the price feed for Finnhub's rate limit, this no longer
-    makes a blocking per-ticker live call on every load. Dividend $/share comes
-    from the verified table (built from your own 2026 payments) via the caller;
-    earnings/ex-div are best-effort from Yahoo only, wrapped so a failure or
-    throttle never blocks the table. Cached 1 hour."""
-    import time as _t
-    out = {}
-    for t in symbols_tuple:
-        rec = {"div_rate": None, "div_yield": None, "ex_date": None,
-               "earn_date": None}
-        # Best-effort earnings/ex-div from Yahoo; short timeout, never fatal.
-        try:
-            info = cf.yf.Ticker(t).info or {}
-            rec["div_rate"] = info.get("dividendRate")
-            ex = info.get("exDividendDate")
-            if ex:
-                rec["ex_date"] = _dt.datetime.utcfromtimestamp(int(ex)).strftime("%b %d")
-            es = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
-            if es:
-                rec["earn_date"] = _dt.datetime.utcfromtimestamp(int(es)).strftime("%b %d")
-        except Exception:
-            pass
-        out[t] = rec
-        _t.sleep(0.05)
-    return out
+    """Dividend + earnings facts. Yahoo's .info endpoint is dead (401) and each
+    call times out, which was silently adding tens of seconds to the load, so we
+    no longer call it. Div/yr comes from the verified own-payments table and
+    Earnings/Ex-div from the researched tables in pnl2026 — the caller already
+    falls back to those. This returns empties instantly so the table is fast."""
+    return {t: {"div_rate": None, "div_yield": None, "ex_date": None,
+                "earn_date": None} for t in symbols_tuple}
 
 
 def fmtp(p):
@@ -811,15 +790,6 @@ if mode == "My Portfolio (CSV)":
             # Auto-complete: if some holdings are still unpriced, quietly rerun
             # after a short pause to fetch the next batch (each success persists),
             # until all are priced. Bounded so it can't loop forever.
-            if 0 < len(_live_q) < len(price_syms):
-                _tries = st.session_state.get("_price_fill_tries", 0)
-                if _tries < 6:
-                    st.session_state["_price_fill_tries"] = _tries + 1
-                    import time as _tt
-                    _tt.sleep(2)
-                    st.rerun()
-            else:
-                st.session_state["_price_fill_tries"] = 0
             with st.expander("🔬 Diagnose price feeds (which sources work here?)"):
                 st.caption("Runs a live test of each price source from this app's "
                            "server, on a stock (AAPL) and an ETF (QDTE), so we can "
@@ -1242,13 +1212,6 @@ if mode == "My Portfolio (CSV)":
                     f"{((total_val/total_cost-1)*100 if total_cost else 0):+.1f}%")
         _eq3.metric("Positions", f"{len(tblp)}"
                     + (f" ({len(missing)} stale)" if missing else ""))
-        if feed is not None:
-            _src = feed.source_label()
-            _live_n = len(_live_q) if _live_q else 0
-            st.caption(f"📡 Live price source: **{_src}**"
-                       + (f" — {_live_n} quotes this refresh" if _live_n else
-                          " · add a Finnhub key in Secrets for reliable real-time "
-                          "prices (see the app's SECRETS note)."))
         st.dataframe(
             pd.DataFrame(tblp).set_index("Ticker"),
             width='stretch',

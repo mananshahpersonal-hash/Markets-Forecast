@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v46 · 2026-08-30 · disk-persisted price cache: all 38 accumulate across loads & survive reboots"
+BUILD = "v47 · 2026-08-30 · removed sleep that capped fetch at 29; all 38 fetch in one pass; killed dead Yahoo info calls"
 
 warnings.filterwarnings("ignore")
 
