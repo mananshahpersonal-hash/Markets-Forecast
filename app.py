@@ -489,11 +489,29 @@ if mode == "My Portfolio (CSV)":
     if pf_live and HAVE_AUTOREFRESH:
         st_autorefresh(interval=5 * 60 * 1000, key="pf_tick")
         _pc2.caption("🔴 LIVE · updating every 5 min")
-    st.caption("Upload the report CSV you export from Robinhood. It's read right "
-               "here to compute your numbers — never share your login with any app. "
-               "Your last CSV is **remembered** (saved to your private store) until "
-               "you upload a new one or tap Forget.")
-    # restore the last saved CSV once per session
+    # ---- your holdings seed (from your Robinhood position screenshots) ----
+    # ticker, shares, average cost. Used only to PRE-FILL the editable table the
+    # first time; after you edit + save, your saved version is the source.
+    SEED_HOLDINGS = [
+        ("NFLX", 6000, 116.05), ("AAPL", 1000, 166.42), ("QQQI", 2500.014162, 48.30),
+        ("SPYI", 2500, 46.80), ("AMZN", 300, 191.26), ("NVDA", 300, 108.40),
+        ("QDTE", 1700.813449, 34.52), ("IAUI", 800.00998, 54.87), ("WMT", 300, 109.07),
+        ("MCD", 100, 272.45), ("JEPI", 200, 57.74), ("JEPQ", 200, 58.59),
+        ("SPHD", 200, 52.38), ("IWMI", 200, 51.89), ("VZ", 200, 46.40),
+        ("CSHI", 200, 49.75), ("HYBI", 200, 49.31), ("BNDI", 200, 46.40),
+        ("VXUS", 100, 79.66), ("BTCI", 200, 30.71), ("QQQH", 100, 53.54),
+        ("SCHD", 200, 32.46), ("PFE", 200, 26.64), ("T", 200, 23.46),
+        ("IBIT", 100, 45.64), ("ETHA", 100, 19.84), ("IYRI", 200, 49.50),
+        ("VOO", 1, 708.75), ("SPY", 1, 770.80), ("QQQ", 1, 717.89),
+        ("VGT", 1, 120.64), ("VOOG", 1, 84.41), ("ITOT", 1, 168.85),
+        ("BRK.B", 1, 505.76), ("COPX", 1, 78.87), ("NUKZ", 1, 71.16),
+        ("EWZ", 1, 40.20), ("GCOW", 1, 45.79),
+    ]
+    st.caption("Everything below is driven by **your holdings table** (shares + "
+               "average cost, valued at live prices). The Robinhood CSV is "
+               "**optional** — add it only for dividend income and realized-gain "
+               "history. Never share your login with any app.")
+    # restore last saved CSV once per session (optional)
     if "pf" not in st.session_state and not st.session_state.get("pf_restore_tried"):
         st.session_state["pf_restore_tried"] = True
         try:
@@ -504,61 +522,52 @@ if mode == "My Portfolio (CSV)":
                 st.session_state["pf_name"] = "your saved CSV"
         except Exception:
             pass
-    up = st.file_uploader("Upload your Robinhood report (CSV)", type=["csv"])
-    if up is not None:
-        _k = f"{up.name}:{up.size}"
-        if st.session_state.get("pf_key") != _k:
-            try:
-                _txt = up.getvalue().decode("utf-8", errors="ignore")
-                st.session_state["pf"] = pfm.analyze(pfm.parse_csv(_txt))
-                st.session_state["pf_key"] = _k
-                st.session_state["pf_name"] = up.name
-                try:                       # remember it for next time
-                    mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
-                    (mp.STATE_DIR / "pfcsv_data.csv").write_text(_txt)
-                    storage.push("pfcsv")
+    with st.expander("📎 Optional: add Robinhood CSV for dividends & realized gains"):
+        up = st.file_uploader("Upload your Robinhood report (CSV)", type=["csv"])
+        if up is not None:
+            _k = f"{up.name}:{up.size}"
+            if st.session_state.get("pf_key") != _k:
+                try:
+                    _txt = up.getvalue().decode("utf-8", errors="ignore")
+                    st.session_state["pf"] = pfm.analyze(pfm.parse_csv(_txt))
+                    st.session_state["pf_key"] = _k
+                    st.session_state["pf_name"] = up.name
+                    try:
+                        mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
+                        (mp.STATE_DIR / "pfcsv_data.csv").write_text(_txt)
+                        storage.push("pfcsv")
+                    except Exception:
+                        pass
+                except Exception as e:
+                    st.error(f"Couldn't read that CSV: {e}")
+        if "pf" in st.session_state:
+            _P0 = st.session_state["pf"]
+            st.caption(f"📎 Loaded: **{st.session_state.get('pf_name', 'your CSV')}** — "
+                       f"{_P0.get('n_rows', '?')} transactions.")
+            if _P0.get("skipped"):
+                st.caption(f"(skipped {_P0['skipped']} unreadable line(s))")
+            if st.button("🗑️ Forget saved CSV"):
+                try:
+                    for _f in mp.STATE_DIR.glob("pfcsv_*"):
+                        _f.unlink()
+                    storage.delete("pfcsv")
                 except Exception:
                     pass
-            except Exception as e:
-                st.error(f"Couldn't read that CSV: {e}")
-                st.stop()
-    if "pf" in st.session_state:
-        _ca, _cb = st.columns([3, 1])
-        _P0 = st.session_state["pf"]
-        _ca.caption(f"📎 Loaded: **{st.session_state.get('pf_name', 'your CSV')}** — "
-                    f"{_P0.get('n_rows', '?')} transactions read — remembered across "
-                    f"visits until you replace it.")
-        if _P0.get("skipped"):
-            st.warning(f"⚠️ Skipped **{_P0['skipped']}** unreadable line(s) (usually "
-                       f"the footer or a stray comma). If a trade seems missing from "
-                       f"the numbers, paste that line to me and I'll adapt the reader.")
-        if _cb.button("🗑️ Forget saved CSV", use_container_width=True):
-            try:
-                for _f in mp.STATE_DIR.glob("pfcsv_*"):
-                    _f.unlink()
-                storage.delete("pfcsv")
-            except Exception:
-                pass
-            for _kk in ("pf", "pf_key", "pf_name"):
-                st.session_state.pop(_kk, None)
-            st.rerun()
-    if "pf" not in st.session_state:
-        st.info("**How to export:** robinhood.com (desktop) → account menu → "
-                "**Settings → Reports & statements → Generate report** → pick your "
-                "date range (start from when you began investing) → **CSV**. Then "
-                "drop the file here.")
-        st.stop()
-    P = st.session_state["pf"]
-    pos, rz, dv = P["positions"], P["realized"], P["dividends"]
+                for _kk in ("pf", "pf_key", "pf_name"):
+                    st.session_state.pop(_kk, None)
+                st.rerun()
+
+    P = st.session_state.get("pf")
+    pos = P["positions"] if P else {}
+    rz = P["realized"] if P else pd.DataFrame(columns=["date", "instrument", "gain", "term", "class"])
+    dv = P["dividends"] if P else pd.DataFrame(columns=["date", "instrument", "amount"])
     now = _dt.datetime.utcnow()
 
-    # ---- CURRENT HOLDINGS you can correct (the CSV can't rebuild shares through
-    # options assignments, a broker migration, or splits — so let the user fix them) ----
-    st.markdown("### ✏️ Your current holdings")
-    st.caption("The CSV can't perfectly rebuild share counts for accounts with "
-               "options, transfers between brokers, or splits — so **correct any "
-               "share counts here to match Robinhood** (type over them). This is "
-               "saved and remembered, and everything below uses these numbers.")
+    # ---- YOUR CURRENT HOLDINGS (editable, saved) ----
+    st.markdown("### ✏️ Your holdings")
+    st.caption("Pre-filled from your Robinhood positions. Type over shares or average "
+               "cost anytime to keep it exact, add/remove rows, then **Save**. "
+               "Everything below updates from this.")
     if "pf_holdings" not in st.session_state:
         saved = None
         try:
@@ -568,17 +577,18 @@ if mode == "My Portfolio (CSV)":
                 saved = pd.read_csv(_hp)
         except Exception:
             saved = None
-        if saved is not None and len(saved):
+        if saved is not None and len(saved) and "Avg cost" in saved.columns:
             st.session_state["pf_holdings"] = saved
-        else:                       # seed from the CSV's best guess (stocks/ETFs/crypto)
-            seed = [{"Ticker": i, "Shares": round(p["shares"], 4)}
-                    for i, p in pos.items()
-                    if p["class"] in ("Stocks & ETFs", "Crypto") and p["shares"] > 1e-9]
+        else:
             st.session_state["pf_holdings"] = pd.DataFrame(
-                sorted(seed, key=lambda r: -r["Shares"]) or [{"Ticker": "", "Shares": 0.0}])
-    edited = st.data_editor(st.session_state["pf_holdings"], num_rows="dynamic",
-                            use_container_width=True, key="pf_hold_editor",
-                            column_config={"Shares": st.column_config.NumberColumn(format="%.4g")})
+                [{"Ticker": t, "Shares": s, "Avg cost": a} for t, s, a in SEED_HOLDINGS])
+    edited = st.data_editor(
+        st.session_state["pf_holdings"], num_rows="dynamic",
+        use_container_width=True, key="pf_hold_editor",
+        column_config={
+            "Shares": st.column_config.NumberColumn(format="%.4f"),
+            "Avg cost": st.column_config.NumberColumn(format="$%.2f",
+                        help="Your average cost per share (from Robinhood). Leave 0 if unknown.")})
     _hc1, _hc2 = st.columns([1, 3])
     if _hc1.button("💾 Save holdings", use_container_width=True):
         st.session_state["pf_holdings"] = edited
@@ -586,13 +596,20 @@ if mode == "My Portfolio (CSV)":
             mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
             edited.to_csv(mp.STATE_DIR / "pfhold_data.csv", index=False)
             storage.push("pfhold")
-            _hc2.success("Saved — these are remembered across visits.")
+            _hc2.success("Saved — remembered across visits, laptop and phone.")
         except Exception:
             _hc2.info("Saved for this session.")
-    holdings = {str(r["Ticker"]).upper().strip(): float(r["Shares"])
-                for _, r in edited.iterrows()
-                if str(r.get("Ticker", "")).strip() and float(r.get("Shares", 0) or 0) > 0}
-    # infer class per ticker (crypto vs stock) from the CSV where known
+
+    holdings = {}   # ticker -> (shares, avg_cost)
+    for _, r in edited.iterrows():
+        t = str(r.get("Ticker", "")).upper().strip()
+        try:
+            sh = float(r.get("Shares", 0) or 0)
+            ac = float(r.get("Avg cost", 0) or 0)
+        except Exception:
+            continue
+        if t and sh > 0:
+            holdings[t] = (sh, ac)
     cls_of = {i: p["class"] for i, p in pos.items()}
     price_syms, sym_cls = {}, {}
     for t in holdings:
@@ -607,42 +624,51 @@ if mode == "My Portfolio (CSV)":
             _batch = mp._batch_close_series(sorted(set(price_syms.values())), chunk=40)
         closes = {t: _batch.get(s) for t, s in price_syms.items()}
 
-    total_val, unreal = 0.0, 0.0
+    total_val = total_cost = 0.0
     win = {"today": 0.0, "week": 0.0, "month": 0.0, "ytd": 0.0}
-    rows, hseries = [], {}
-    for inst, shares in holdings.items():
+    rows, hseries, missing = [], {}, []
+    for inst, (shares, avgc) in holdings.items():
         c = closes.get(inst)
         cls = sym_cls.get(inst, "Stocks & ETFs")
+        cost = shares * avgc
         if c is None or len(c) < 2:
-            rows.append({"inst": inst, "class": cls, "shares": shares,
-                         "value": None, "unreal": None})
+            missing.append(inst)
+            rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
+                         "price": None, "value": None, "cost": cost,
+                         "tot": None, "totpct": None, "today": None})
             continue
         w = pfm.market_windows(c, now)
-        val = shares * w["now"]
+        price = w["now"]
+        val = shares * price
         total_val += val
+        total_cost += cost
         for k in win:
-            win[k] += shares * (w["now"] - w[k])
-        rows.append({"inst": inst, "class": cls, "shares": shares, "value": val,
-                     "unreal": None})
+            win[k] += shares * (price - w[k])
+        rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
+                     "price": price, "value": val, "cost": cost,
+                     "tot": val - cost, "totpct": (val/cost - 1)*100 if cost else None,
+                     "today": shares * (price - w["today"])})
         hseries[inst] = c.tail(400) * shares
     rz_sums = (pfm.period_sums(rz, "gain", now) if not rz.empty
                else {k: 0.0 for k in ("today", "week", "month", "ytd", "all")})
     dv_sums = pfm.period_sums(dv, "amount", now)
-    for k in win:
-        win[k] += rz_sums[k] + dv_sums[k]
 
     st.markdown("### 💰 Right now")
-    m1, m2, m3, m4, m5 = st.columns(5)
+    _tot_unreal = total_val - total_cost
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Portfolio value", f"${total_val:,.0f}")
-    m2.metric("Today", f"${win['today']:+,.0f}")
-    m3.metric("This week", f"${win['week']:+,.0f}")
-    m4.metric("This month", f"${win['month']:+,.0f}")
-    m5.metric("This year", f"${win['ytd']:+,.0f}")
-    st.caption("Live prices for stocks & crypto (futures/options appear below as "
-               "realized cash). Turn on **🔴 Live mode** at the top and these refresh "
-               "every ~5 minutes. Window P&L = price moves on current holdings + "
-               "realized gains + dividends in the window — a good estimate, not to "
-               "the penny.")
+    m2.metric("Total gain/loss",
+              f"${_tot_unreal:+,.0f}",
+              f"{(_tot_unreal/total_cost*100 if total_cost else 0):+.1f}%")
+    m3.metric("Today", f"${win['today']:+,.0f}")
+    m4.metric("This year (price)", f"${win['ytd']:+,.0f}")
+    if missing:
+        st.caption("⚠️ No live price yet for: " + ", ".join(missing) + " (Yahoo may be "
+                   "throttling, or the symbol differs). Its value isn't in the totals "
+                   "above — reload in a minute.")
+    st.caption("Value & gains use **live prices** on your holdings. 'Today/This year' "
+               "are price moves on current holdings; add the CSV for dividends & "
+               "realized gains. Turn on 🔴 Live updates to refresh every ~5 min.")
     if hseries:
         _hdf = pd.DataFrame(hseries).ffill()
         _tot = _hdf.sum(axis=1).dropna()
@@ -716,27 +742,38 @@ if mode == "My Portfolio (CSV)":
     tblp = []
     for r in sorted([x for x in rows if x["value"]], key=lambda x: -x["value"]):
         wgt = r["value"] / total_val * 100 if total_val else 0
-        tblp.append({"Ticker": r["inst"], "Type": r["class"],
-                     "Shares": f"{r['shares']:g}", "Value": f"${r['value']:,.0f}",
-                     "Weight": f"{wgt:.0f}%"})
+        tblp.append({
+            "Ticker": r["inst"],
+            "Shares": f"{r['shares']:g}",
+            "Avg cost": f"${r['avgc']:,.2f}" if r["avgc"] else "—",
+            "Price": f"${r['price']:,.2f}",
+            "Value": f"${r['value']:,.0f}",
+            "Total $": f"${r['tot']:+,.0f}" if r["avgc"] else "—",
+            "Total %": f"{r['totpct']:+.1f}%" if (r["avgc"] and r["totpct"] is not None) else "—",
+            "Today $": f"${r['today']:+,.0f}",
+            "Weight": f"{wgt:.1f}%"})
     if tblp:
-        st.table(pd.DataFrame(tblp).set_index("Ticker"))
+        st.dataframe(pd.DataFrame(tblp).set_index("Ticker"), use_container_width=True)
         _big = [t["Ticker"] for t in tblp if float(t["Weight"].rstrip("%")) >= 30]
         if _big:
             st.warning("⚠️ **Concentration:** " + ", ".join(_big) + " is over 30% of "
                        "your portfolio — one bad day there moves everything. "
                        "Spreading out is the cheapest protection there is.")
-        st.caption("Gain-since-purchase isn't shown because your cost basis can't be "
-                   "rebuilt reliably through the broker transfer + options history. "
-                   "Value, weights, and income above are still accurate.")
+        st.caption("Total $/% is gain since purchase (needs your average cost — edit "
+                   "it in the table above if any show '—'). Today $ is today's price "
+                   "move. All values use live prices.")
 
     st.markdown("### 💵 Dividends")
-    d1, d2, d3 = st.columns(3)
-    d1.metric("Last 30 days", f"${dv_sums['month']:,.2f}")
-    d2.metric("This year", f"${dv_sums['ytd']:,.2f}")
-    d3.metric("All time (in file)", f"${dv_sums['all']:,.2f}")
+    if P is not None:
+        d1, d2, d3 = st.columns(3)
+        d1.metric("Last 30 days", f"${dv_sums['month']:,.2f}")
+        d2.metric("This year", f"${dv_sums['ytd']:,.2f}")
+        d3.metric("All time (in file)", f"${dv_sums['all']:,.2f}")
+    else:
+        st.caption("Add your Robinhood CSV above to see dividends actually received. "
+                   "Below is the forward estimate from your current holdings.")
     proj = 0.0
-    for inst, shares in holdings.items():
+    for inst, (shares, _avgc) in holdings.items():
         if sym_cls.get(inst) != "Stocks & ETFs":
             continue
         try:

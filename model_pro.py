@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v24 · 2026-08-29 · fix dividend mislabel + editable current-holdings table"
+BUILD = "v27 · 2026-08-29 · all 38 holdings complete with cost basis"
 
 warnings.filterwarnings("ignore")
 
