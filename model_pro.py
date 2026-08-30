@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v50 · 2026-08-30 · detailed price-fetch logging to pinpoint the 29-vs-38 filter"
+BUILD = "v51 · 2026-08-30 · FIX: 9 holdings with non-priceable stored class now default to Stocks&ETFs → all 38 priced"
 
 warnings.filterwarnings("ignore")
 

@@ -781,12 +781,26 @@ if mode == "My Portfolio (CSV)":
             holdings[t] = (sh, ac)
     cls_of = {i: p["class"] for i, p in pos.items()}
     price_syms, sym_cls = {}, {}
+    _dropped = []
     for t in holdings:
         c = cls_of.get(t, "Crypto" if t in pfm.CRYPTO else "Stocks & ETFs")
+        # If the stored class isn't priceable (e.g. an old "Options"/"Futures"/
+        # blank tag from saved data), fall back to Stocks & ETFs so the holding
+        # still gets a price instead of being silently dropped. Real crypto stays
+        # crypto.
+        if c not in ("Crypto", "Stocks & ETFs"):
+            c = "Crypto" if t in pfm.CRYPTO else "Stocks & ETFs"
         sym_cls[t] = c
         s = pfm.yahoo_symbol(t, c)
         if s:
             price_syms[t] = s
+        else:
+            _dropped.append((t, c))
+    try:
+        if _dropped:
+            print(f"[MH] DROPPED (no price symbol): {_dropped}", flush=True)
+    except Exception:
+        pass
     closes = {}
     _live_q = {}
     if price_syms:
