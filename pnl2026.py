@@ -239,3 +239,28 @@ def read_from_closes(closes) -> dict:
         }
     except Exception:
         return {}
+
+
+# ---------------------------------------------------------------------------
+# UPCOMING EVENTS CATALOG
+# ---------------------------------------------------------------------------
+# Short, human notes about things coming up for a holding that a price feed can
+# NEVER know (product launches, splits, notable catalysts). Edit freely — this
+# is the one place these live. Keep each note to a phrase. Dates optional.
+# Format: TICKER: (note, approx_date_or_None)
+UPCOMING_EVENTS = {
+    "AAPL": ("iPhone 17 launch event expected", "2026-09"),
+    "NVDA": ("GTC / next-gen GPU cadence a recurring catalyst", None),
+    "TSLA": ("Delivery numbers each quarter move the stock", None),
+    "AMZN": ("AWS re:Invent (late Nov) — cloud guidance", "2026-11"),
+    "MCD": ("Dividend aristocrat; watches consumer spend", None),
+}
+
+
+def event_for(ticker: str):
+    """Return a short 'what's coming up' note for a ticker, or ''. """
+    e = UPCOMING_EVENTS.get(ticker.upper())
+    if not e:
+        return ""
+    note, when = e
+    return f"{note}" + (f" (~{when})" if when else "")

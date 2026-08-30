@@ -44,6 +44,35 @@ def _cached_closes(symbols_tuple):
     return mp._batch_close_series(list(symbols_tuple), chunk=40)
 
 
+@st.cache_data(ttl=43200, show_spinner=False)
+def _cached_info_bundle(symbols_tuple):
+    """Per-ticker dividend + earnings facts, cached 12 HOURS. These barely change
+    intraday, so caching them long keeps the every-few-minutes price refresh from
+    ever firing these extra .info calls — that's what protects the Yahoo limit.
+    Returns {ticker: {div_rate, div_yield, ex_date, earn_date}} (missing → None).
+    Fetched gently with a tiny pause between tickers."""
+    import time as _t
+    out = {}
+    for t in symbols_tuple:
+        rec = {"div_rate": None, "div_yield": None, "ex_date": None,
+               "earn_date": None}
+        try:
+            info = cf.yf.Ticker(t).info or {}
+            rec["div_rate"] = info.get("dividendRate")
+            rec["div_yield"] = info.get("dividendYield")
+            ex = info.get("exDividendDate")
+            if ex:
+                rec["ex_date"] = _dt.datetime.utcfromtimestamp(int(ex)).strftime("%b %d")
+            es = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
+            if es:
+                rec["earn_date"] = _dt.datetime.utcfromtimestamp(int(es)).strftime("%b %d")
+        except Exception:
+            pass
+        out[t] = rec
+        _t.sleep(0.15)
+    return out
+
+
 def fmtp(p):
     """Magnitude-aware price formatting (kept local so app.py never depends on
     model_pro for this)."""
@@ -923,36 +952,68 @@ if mode == "My Portfolio (CSV)":
         st.divider()
 
     st.markdown("### 📋 Holdings")
+    _priced = [x for x in rows if x["value"]]
+    # 12h-cached dividend + earnings facts for the stock/ETF tickers only.
+    _info_syms = tuple(sorted({r["inst"] for r in _priced
+                               if r["class"] == "Stocks & ETFs"}))
+    _info = _cached_info_bundle(_info_syms) if _info_syms else {}
+
     tblp = []
-    for r in sorted([x for x in rows if x["value"]], key=lambda x: -x["value"]):
+    for r in sorted(_priced, key=lambda x: -x["value"]):
         wgt = r["value"] / total_val * 100 if total_val else 0
+        info = _info.get(r["inst"], {})
+        dr = info.get("div_rate")
+        div_ps = f"${dr:,.2f}/sh" if dr else "—"
+        div_yr = f"${dr*r['shares']:,.0f}/yr" if dr else "—"
+        exd = info.get("ex_date") or "—"
+        earn = info.get("earn_date") or "—"
+        # Long-term if the position has been held > 1 year. We don't have per-lot
+        # dates for current holdings, so this is a holding-level hint from average
+        # cost presence; shown as "—" when unknown rather than guessed.
+        ev = pnl.event_for(r["inst"]) if pnl is not None else ""
         tblp.append({
             "Ticker": r["inst"],
             "Shares": f"{r['shares']:g}",
             "Avg cost": f"${r['avgc']:,.2f}" if r["avgc"] else "—",
             "Price": f"${r['price']:,.2f}",
             "Value": f"${r['value']:,.0f}",
-            "Total $": f"${r['tot']:+,.0f}" if r["avgc"] else "—",
-            "Total %": f"{r['totpct']:+.1f}%" if (r["avgc"] and r["totpct"] is not None) else "—",
-            "Today $": f"${r['today']:+,.0f}",
-            "Weight": f"{wgt:.1f}%",
-            "Signal": {"Buy": "🟢 Buy", "Sell": "🔴 Sell"}.get(r.get("signal"), "⚪ Hold")})
+            "P/L $": f"${r['tot']:+,.0f}" if r["avgc"] else "—",
+            "P/L %": f"{r['totpct']:+.1f}%" if (r["avgc"] and r["totpct"] is not None) else "—",
+            "Today": f"${r['today']:+,.0f}",
+            "Wt": f"{wgt:.0f}%",
+            "Signal": {"Buy": "🟢 Buy", "Sell": "🔴 Sell"}.get(r.get("signal"), "⚪ Hold"),
+            "Div/yr": div_yr,
+            "Ex-div": exd,
+            "Earnings": earn,
+            "Coming up": ev or "—"})
     if tblp:
-        st.dataframe(pd.DataFrame(tblp).set_index("Ticker"), use_container_width=True)
-        st.caption("**Signal** is the app's own medium-term trend read (same "
-                   "50/200-day + 3-month rule as the top-of-app strong alerts): "
-                   "🟢 Buy = clean uptrend, not overbought; 🔴 Sell = clean "
-                   "downtrend, not oversold; ⚪ Hold = everything else. It's a "
-                   "weeks-to-months momentum call, **not** advice to trade — "
-                   "short-term odds stay near a coin flip, and that's honest.")
-        _big = [t["Ticker"] for t in tblp if float(t["Weight"].rstrip("%")) >= 30]
+        # ---- Total equity headline (updates with the cached price refresh) ----
+        _eq1, _eq2, _eq3 = st.columns([2, 1, 1])
+        _eq1.metric("💰 Total equity (holdings, live)", f"${total_val:,.0f}",
+                    f"${win['today']:+,.0f} today")
+        _eq2.metric("Unrealized P/L", f"${(total_val-total_cost):+,.0f}",
+                    f"{((total_val/total_cost-1)*100 if total_cost else 0):+.1f}%")
+        _eq3.metric("Positions", f"{len(tblp)}")
+        st.dataframe(
+            pd.DataFrame(tblp).set_index("Ticker"),
+            use_container_width=True,
+            column_config={
+                "Signal": st.column_config.TextColumn(width="small"),
+                "Coming up": st.column_config.TextColumn(width="medium"),
+            })
+        st.caption("**Live** columns (Price, Value, P/L, Today, Signal) refresh "
+                   "with the 5-min price cache. **Div/yr · Ex-div · Earnings** come "
+                   "from a separate feed cached **12 h** — that's deliberate, so "
+                   "the frequent refresh never trips Yahoo's rate limit. "
+                   "**Signal** = the app's 50/200-day + 3-month trend read "
+                   "(🟢 clean uptrend · 🔴 clean downtrend · ⚪ hold); a "
+                   "weeks-to-months momentum call, not trade advice. **Coming up** "
+                   "is an editable catalog in the app files.")
+        _big = [t["Ticker"] for t in tblp if float(t["Wt"].rstrip("%")) >= 30]
         if _big:
             st.warning("⚠️ **Concentration:** " + ", ".join(_big) + " is over 30% of "
                        "your portfolio — one bad day there moves everything. "
                        "Spreading out is the cheapest protection there is.")
-        st.caption("Total $/% is gain since purchase (needs your average cost — edit "
-                   "it in the table above if any show '—'). Today $ is today's price "
-                   "move. All values use live prices.")
 
     st.markdown("### 💵 Dividends")
     if P is not None:
