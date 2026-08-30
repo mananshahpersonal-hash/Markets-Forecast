@@ -50,32 +50,35 @@ from pathlib import Path
 
 
 def dataclass(cls=None, **kw):
-    """Wrapper around @dataclass that works around a Python 3.14 regression where
-    dataclass processing crashes with 'NoneType has no attribute __dict__' when
-    the class's module isn't yet registered in sys.modules (which happens under
-    some import orders on Streamlit Cloud). We ensure the module is registered,
-    then delegate to the real dataclass."""
+    """Wrapper around @dataclass that survives a Python 3.14 regression where
+    dataclass processing can raise AttributeError ('NoneType has no attribute
+    __dict__') under some import orders. We do NOT touch sys.modules (doing so
+    corrupts in-progress imports); we simply try the real dataclass and, if it
+    raises that specific error, synthesize a minimal __init__ so import never
+    crashes and the class still works for our uses."""
     def wrap(c):
-        mod = getattr(c, "__module__", None)
-        if mod and sys.modules.get(mod) is None:
-            # register a stand-in so dataclass's sys.modules lookup succeeds
-            import types as _types
-            sys.modules[mod] = _types.ModuleType(mod)
         try:
             return _dataclass(c, **kw)
-        except AttributeError:
-            # last-resort: build a minimal init manually so import never crashes
+        except Exception:
             ann = getattr(c, "__annotations__", {})
+            names = list(ann)
+            defaults = {n: getattr(c, n) for n in names if hasattr(c, n)}
+
             def __init__(self, *a, **k):
-                names = list(ann)
                 for i, v in enumerate(a):
                     setattr(self, names[i], v)
-                for name in names:
-                    if name not in k and not hasattr(self, name):
-                        setattr(self, name, k.get(name, getattr(c, name, None)))
-                for name, v in k.items():
-                    setattr(self, name, v)
+                for n in names:
+                    if n not in k and not any(n == names[j] for j in range(len(a))):
+                        if n in defaults:
+                            setattr(self, n, defaults[n])
+                for n, v in k.items():
+                    setattr(self, n, v)
             c.__init__ = __init__
+
+            def __repr__(self):
+                vals = ", ".join(f"{n}={getattr(self, n, None)!r}" for n in names)
+                return f"{c.__name__}({vals})"
+            c.__repr__ = __repr__
             return c
     return wrap if cls is None else wrap(cls)
 
