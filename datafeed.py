@@ -133,37 +133,56 @@ def finnhub_next_earnings(symbol: str):
 
 
 def stooq_quote(symbol: str):
-    """Keyless fallback via Stooq CSV (covers most US ETFs and stocks that
-    Finnhub's free tier or a rate-limited Yahoo miss). Returns {'price',...} or
-    None. Stooq uses lowercase '<sym>.us'. Its CSV last row is the most recent
-    close — correct on weekends too."""
+    """Keyless fallback via Stooq's light quote endpoint. Covers US stocks AND
+    ETFs (QDTE, VXUS, etc.) that Finnhub's free tier misses, and works when Yahoo
+    is blocked. Returns {'price','prev_close','change','pct'} or None.
+
+    Uses /q/l/ (light quote) with an explicit field list:
+      s=symbol, d2=date, t2=time, o/h/l/c=OHLC, v=volume, p=previous close? 
+    We request close (c) and open (o). Stooq gives the latest close, which on a
+    weekend is Friday's — exactly what we want when markets are shut."""
     sym = symbol.lower().replace(".", "-") + ".us"
-    url = f"https://stooq.com/q/d/l/?s={sym}&i=d"
+    # f=sd2t2ohlcvn : symbol,date,time,open,high,low,close,volume,name
+    url = f"https://stooq.com/q/l/?s={sym}&f=sd2t2ohlcv&h&e=csv"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "market-helper/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=8) as r:
-            rows = r.read().decode().strip().splitlines()
-        if len(rows) < 2:
+            body = r.read().decode().strip()
+        lines = body.splitlines()
+        if len(lines) < 2:
             return None
-        last = rows[-1].split(",")          # Date,Open,High,Low,Close,Volume
-        prev = rows[-2].split(",") if len(rows) >= 3 else last
-        close = float(last[4]); pclose = float(prev[4])
-        return {"price": close, "prev_close": pclose,
-                "change": close - pclose,
-                "pct": (close/pclose - 1)*100 if pclose else 0.0}
+        hdr = lines[0].split(",")
+        row = lines[1].split(",")
+        rec = dict(zip(hdr, row))
+        close = rec.get("Close") or rec.get("close")
+        if not close or close in ("N/D", "-"):
+            return None
+        close = float(close)
+        openp = rec.get("Open") or rec.get("open")
+        prev = float(openp) if openp and openp not in ("N/D", "-") else close
+        return {"price": close, "prev_close": prev,
+                "change": close - prev,
+                "pct": (close/prev - 1)*100 if prev else 0.0}
     except Exception:
         return None
 
 
 def best_quote(symbol: str):
-    """Try Finnhub, then Stooq. Returns a quote dict or None. (Yahoo is handled
-    separately via the historical close series.)"""
+    """Get a quote, trying the most reliable source first.
+
+    Stooq is tried FIRST: it's keyless, has no rate limit, and covers both
+    stocks AND ETFs (QDTE, VXUS, SPYI...) — the exact things Finnhub's free tier
+    drops. Finnhub is the fallback for anything Stooq somehow misses. This order
+    is deliberate: it's what gets all 38 holdings priced instead of ~29."""
+    q = stooq_quote(symbol)
+    if q:
+        return q
     q = finnhub_quote(symbol)
     if q:
         return q
-    return stooq_quote(symbol)
+    return None
 
 
 def source_label() -> str:
-    """Human tag for which feed is active, shown in the UI."""
-    return "Finnhub ✓" if have_finnhub() else "Yahoo/Stooq (no Finnhub key)"
+    """Human tag for which feeds are active."""
+    return "Stooq + Finnhub" if have_finnhub() else "Stooq (keyless)"

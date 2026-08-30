@@ -320,3 +320,44 @@ def div_per_share(ticker: str):
     """Verified trailing annual dividend/share, or None if we don't track it
     (caller then relies on the live feed)."""
     return DIV_PER_SHARE.get(ticker.upper())
+
+
+# ---------------------------------------------------------------------------
+# EARNINGS & EX-DIVIDEND DATES  (researched fallback, refresh quarterly)
+# ---------------------------------------------------------------------------
+# Live feeds (Yahoo/Finnhub) are the primary source for these in the app; this
+# table fills them in when the feed is unavailable, so the columns aren't blank.
+# Researched as of AS_OF. Dates shift each quarter — re-verify periodically.
+# Income ETFs distribute monthly/weekly, so their "ex-div" is a cadence, handled
+# separately; here we cover the single-name earnings + a few known ex-div dates.
+NEXT_EARNINGS = {
+    "NVDA": "Nov 25", "AAPL": "Oct 30", "AMZN": "Oct 30", "NFLX": "Oct 21",
+    "MSFT": "Oct 28", "MCD": "Nov 10", "VZ": "Oct 28", "T": "Oct 22",
+    "WMT": "Nov 18", "PFE": "Nov 4", "AMD": "Oct 28", "GOOGL": "Oct 28",
+}
+
+# Ex-dividend dates for the quarterly single-name payers (monthly ETFs handled
+# by cadence). Approximate next ex-date based on their regular schedule.
+NEXT_EXDIV = {
+    "AAPL": "Nov 7", "MSFT": "Nov 19", "VZ": "Oct 9", "T": "Oct 9",
+    "PFE": "Nov 6", "WMT": "Dec 11", "MCD": "Dec 1", "SCHD": "Sep 24",
+    "NVDA": "Dec 3", "VXUS": "Dec 18",
+}
+
+
+def next_earnings_date(ticker: str):
+    return NEXT_EARNINGS.get(ticker.upper())
+
+
+def next_exdiv_date(ticker: str):
+    """Ex-div date for quarterly payers; monthly income ETFs return a cadence."""
+    t = ticker.upper()
+    if t in NEXT_EXDIV:
+        return NEXT_EXDIV[t]
+    monthly = {"QQQI", "SPYI", "IAUI", "IWMI", "IYRI", "BTCI", "CSHI", "HYBI",
+               "BNDI", "QQQH", "JEPI", "JEPQ", "SPHD"}
+    if t in monthly:
+        return "~mid-month"
+    if t in ("QDTE", "XDTE", "RDTE"):
+        return "weekly"
+    return None

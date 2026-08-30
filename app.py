@@ -730,21 +730,20 @@ if mode == "My Portfolio (CSV)":
         # Finnhub live quotes keyed by holding ticker (reliable current price).
         _live_q = _cached_live_quotes(tuple(sorted(price_syms.keys())))
         if feed is not None:
-            if feed.have_finnhub():
-                _n = len(_live_q)
-                if _n:
-                    st.success(f"📡 Live prices via **Finnhub ✓** — {_n} quotes "
-                               f"this refresh. Prices are real-time.")
-                else:
-                    st.error("📡 Finnhub key detected but **0 quotes came back** "
-                             "— the key may be inactive/rejected, or Finnhub is "
-                             "unreachable. Falling back to Yahoo. If this persists, "
-                             "regenerate the key on finnhub.io and re-save it in "
-                             "Secrets.")
+            _n = len(_live_q)
+            _tot_syms = len(price_syms)
+            _src = feed.source_label()
+            if _n >= _tot_syms:
+                st.success(f"📡 Live prices via **{_src}** — all {_n} holdings "
+                           f"priced. (Weekends show Friday's close.)")
+            elif _n:
+                st.warning(f"📡 Live prices via **{_src}** — {_n} of {_tot_syms} "
+                           f"holdings priced this refresh. The rest use their last "
+                           f"known price; reload once and they fill in (each is "
+                           f"cached as it succeeds).")
             else:
-                st.info("📡 No Finnhub key found in Secrets — using Yahoo (which "
-                        "rate-limits). Add FINNHUB_KEY in Settings → Secrets for "
-                        "reliable real-time prices. See SECRETS_SETUP.md.")
+                st.error(f"📡 Price feeds unreachable this refresh ({_src}). Using "
+                         f"last known / cost. Reload in a minute.")
 
     total_val = total_cost = 0.0
     stale_val = 0.0            # value of positions running on fallback (no live price)
@@ -1110,8 +1109,14 @@ if mode == "My Portfolio (CSV)":
             dr = pnl.div_per_share(r["inst"])      # verified fallback table
             _dr_src = "est"
         div_yr = (f"${dr*r['shares']:,.0f}/yr" + (" *" if _dr_src == "est" else "")) if dr else "—"
-        exd = info.get("ex_date") or "—"
-        earn = info.get("earn_date") or "—"
+        exd = info.get("ex_date")
+        if not exd and pnl is not None and hasattr(pnl, "next_exdiv_date"):
+            exd = pnl.next_exdiv_date(r["inst"])
+        exd = exd or "—"
+        earn = info.get("earn_date")
+        if not earn and pnl is not None and hasattr(pnl, "next_earnings_date"):
+            earn = pnl.next_earnings_date(r["inst"])
+        earn = earn or "—"
         _is_stale = r.get("stale")
         ev = pnl.event_for(r["inst"]) if (pnl is not None and hasattr(pnl,"event_for")) else ""
         tblp.append({
