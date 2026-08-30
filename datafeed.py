@@ -41,26 +41,24 @@ def have_finnhub() -> bool:
     return bool(_key())
 
 
-def _get(path: str, params: dict, timeout: float = 8.0):
-    """GET helper. Returns parsed JSON or None on any error/rate-limit."""
+def _get(path: str, params: dict, timeout: float = 6.0):
+    """GET helper. Returns parsed JSON or None on any error. NO retry/backoff on
+    429 — when Finnhub rate-limits mid-batch, sleeping to retry just burns
+    seconds and stalls the whole fetch. We fail fast; the disk cache + next
+    refresh pick up whatever got limited, fetching only the still-missing few
+    (which then succeed because there are far fewer of them)."""
     k = _key()
     if not k:
         return None
     params = dict(params)
     params["token"] = k
     url = _BASE + path + "?" + urllib.parse.urlencode(params)
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "market-helper/1.0"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.load(r)
-        except Exception as e:
-            msg = str(e)
-            if "429" in msg and attempt < 2:      # rate limited: brief backoff
-                time.sleep(1.2 * (attempt + 1))
-                continue
-            return None
-    return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "market-helper/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------------- #

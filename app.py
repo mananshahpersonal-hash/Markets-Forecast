@@ -787,9 +787,20 @@ if mode == "My Portfolio (CSV)":
                         f"complete on their own, or reload once.")
             else:
                 st.error("📡 No prices returned this refresh. Reload in a minute.")
-            # Auto-complete: if some holdings are still unpriced, quietly rerun
-            # after a short pause to fetch the next batch (each success persists),
-            # until all are priced. Bounded so it can't loop forever.
+            # Auto-complete: the disk cache keeps every success, so each rerun
+            # fetches ONLY the still-missing tickers — a handful — which stay
+            # under the rate limit and succeed. We pause ~4s (to let Finnhub's
+            # per-minute window recover) then rerun, until all are priced or we
+            # hit the attempt cap.
+            if 0 < len(_live_q) < len(price_syms):
+                _tries = st.session_state.get("_price_fill_tries", 0)
+                if _tries < 8:
+                    st.session_state["_price_fill_tries"] = _tries + 1
+                    import time as _tt
+                    _tt.sleep(4)
+                    st.rerun()
+            else:
+                st.session_state["_price_fill_tries"] = 0
             with st.expander("🔬 Diagnose price feeds (which sources work here?)"):
                 st.caption("Runs a live test of each price source from this app's "
                            "server, on a stock (AAPL) and an ETF (QDTE), so we can "
