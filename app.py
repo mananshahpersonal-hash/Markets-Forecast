@@ -24,6 +24,11 @@ except Exception:
     pfm = None
 
 try:
+    import pnl2026 as pnl
+except Exception:
+    pnl = None
+
+try:
     from streamlit_autorefresh import st_autorefresh
     HAVE_AUTOREFRESH = True
 except Exception:
@@ -631,11 +636,16 @@ if mode == "My Portfolio (CSV)":
         c = closes.get(inst)
         cls = sym_cls.get(inst, "Stocks & ETFs")
         cost = shares * avgc
+        # Buy/Hold/Sell from the app's own strong-trend rule (same definition as
+        # the top-of-app alert), computed from the price series we already have.
+        sig = "Hold"
+        if pnl is not None and c is not None and len(c) >= 60:
+            sig = pnl.signal_from_read(pnl.read_from_closes(c))
         if c is None or len(c) < 2:
             missing.append(inst)
             rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
                          "price": None, "value": None, "cost": cost,
-                         "tot": None, "totpct": None, "today": None})
+                         "tot": None, "totpct": None, "today": None, "signal": "—"})
             continue
         w = pfm.market_windows(c, now)
         price = w["now"]
@@ -647,7 +657,7 @@ if mode == "My Portfolio (CSV)":
         rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
                      "price": price, "value": val, "cost": cost,
                      "tot": val - cost, "totpct": (val/cost - 1)*100 if cost else None,
-                     "today": shares * (price - w["today"])})
+                     "today": shares * (price - w["today"]), "signal": sig})
         hseries[inst] = c.tail(400) * shares
     rz_sums = (pfm.period_sums(rz, "gain", now) if not rz.empty
                else {k: 0.0 for k in ("today", "week", "month", "ytd", "all")})
@@ -738,6 +748,85 @@ if mode == "My Portfolio (CSV)":
                    "the CSV (options premium, futures, sold stock). Futures & options "
                    "show as net cash — your copper/gold futures land here.")
 
+    # ---------------- 2026 PROFIT & LOSS STATEMENT ----------------
+    if pnl is not None:
+        st.markdown("### 📊 2026 profit & loss — what you actually made")
+        st.caption(f"Jan 1 → {pnl.AS_OF}. Every line is tagged **exact** "
+                   "(reconciled to your Robinhood statements) or **approx** "
+                   "(a cash-basis or mark-to-market proxy, not a clean realized "
+                   "number). Parsed and QA'd from your brokerage, futures and "
+                   "crypto statements — not live-computed here.")
+        _badge = {"exact": "✅ exact", "approx": "≈ approx", "pending": "⏳ pending"}
+        _pnl_rows = [{"Line": l.label, "Amount": f"${l.amount:+,.0f}",
+                      "Basis": _badge.get(l.basis, l.basis)}
+                     for l in pnl.summary_lines()]
+        _gt = pnl.grand_total()
+        _pnl_rows.append({"Line": "— GRAND TOTAL (what you made in 2026) —",
+                          "Amount": f"${_gt:+,.0f}",
+                          "Basis": "≈ mixed" if pnl.has_approx() else "✅ exact"})
+        st.table(pd.DataFrame(_pnl_rows).set_index("Line"))
+
+        gc1, gc2, gc3 = st.columns(3)
+        gc1.metric("2026 total so far", f"${_gt:+,.0f}")
+        gc2.metric("Realized stock gains",
+                   f"${pnl.STOCK_REALIZED_KNOWN.amount:+,.0f}",
+                   f"ST ${pnl.STOCK_ST:+,.0f} · LT ${pnl.STOCK_LT:+,.0f}")
+        gc3.metric("Realized futures (Jan–Jul)",
+                   f"${pnl.FUTURES_TOTAL.amount:+,.0f}")
+
+        with st.expander("📉 Realized stock sales — line by line (the 17 you sold)"):
+            _srows = []
+            for s in pnl.STOCK_SALES:
+                _srows.append({
+                    "Ticker": s.ticker,
+                    "Shares": f"{s.shares:g}",
+                    "Proceeds": f"${s.proceeds:,.0f}",
+                    "Cost": f"${s.cost:,.0f}" if s.cost is not None else "—",
+                    "Gain/loss": f"${s.gain:+,.0f}" if s.gain is not None else "⏳ need basis",
+                    "Term": ("ST" if s.st_gain and not s.lt_gain else
+                             "LT" if s.lt_gain and not s.st_gain else
+                             "ST+LT" if (s.st_gain or s.lt_gain) else "LT" if s.cost is None else "—"),
+                    "Basis": _badge.get(s.basis, s.basis)})
+            st.table(pd.DataFrame(_srows).set_index("Ticker"))
+            st.caption(
+                f"All 17 sales now have full cost basis and reconcile to your "
+                f"Robinhood proceeds exactly. Net is a **long-term loss**, driven "
+                f"by VKTX (−$50,802) and MSTR (−$57,293). Short-term realized is "
+                f"still positive (+${pnl.STOCK_ST:,.0f}); long-term is "
+                f"${pnl.STOCK_LT:+,.0f}.")
+
+        with st.expander("🧮 Futures — by contract, and month by month (exact)"):
+            st.markdown("**By contract (2026 realized, before fees):**")
+            _crows = [{"Contract": k, "Realized P&L": f"${v:+,.0f}"}
+                      for k, v in pnl.FUTURES_BY_CONTRACT.items()]
+            _crows.append({"Contract": "Fees (all contracts)",
+                           "Realized P&L": f"${pnl.FUTURES_FEES_2026:+,.0f}"})
+            _crows.append({"Contract": "— NET futures —",
+                           "Realized P&L": f"${pnl.FUTURES_TOTAL.amount:+,.0f}"})
+            st.table(pd.DataFrame(_crows).set_index("Contract"))
+            st.caption("⚠️ **Gold lost $30,333 this year** (GC −$40,100, MGC "
+                       "+$9,767) — worst in March (−$62,590 GC) and May "
+                       "(−$39,504 MGC). Copper (+$43,928) is what kept futures "
+                       "net-positive. Netting them together hides that, so both "
+                       "are shown here.")
+            st.markdown("**By month (each ties to the RHD statement):**")
+            _frows = [{"Month": m, "Realized P&L": f"${l.amount:+,.0f}"}
+                      for m, l in pnl.FUTURES_MONTHLY.items()]
+            st.table(pd.DataFrame(_frows).set_index("Month"))
+            st.caption("Each month = Gross P&L + commissions/fees from the RHD "
+                       "statement, reconciled to the cash-balance identity and "
+                       "the Purchase-and-Sale rows. August pending (issues ~Sep "
+                       "1). Replaces the old +$19,243 sweep estimate.")
+
+        _pending = [l for l in pnl.summary_lines() if l.basis != "exact"]
+        if _pending:
+            st.info("Why 'approx' on some lines: options are a **cash-basis** "
+                    "proxy (assignments flow into stock cost basis, not here, so "
+                    "no double-count), and crypto is a **mark-to-market** value "
+                    "change because the statements carry no coin cost basis. "
+                    "Everything marked ✅ is reconciled to the source.")
+        st.divider()
+
     st.markdown("### 📋 Holdings")
     tblp = []
     for r in sorted([x for x in rows if x["value"]], key=lambda x: -x["value"]):
@@ -751,9 +840,16 @@ if mode == "My Portfolio (CSV)":
             "Total $": f"${r['tot']:+,.0f}" if r["avgc"] else "—",
             "Total %": f"{r['totpct']:+.1f}%" if (r["avgc"] and r["totpct"] is not None) else "—",
             "Today $": f"${r['today']:+,.0f}",
-            "Weight": f"{wgt:.1f}%"})
+            "Weight": f"{wgt:.1f}%",
+            "Signal": {"Buy": "🟢 Buy", "Sell": "🔴 Sell"}.get(r.get("signal"), "⚪ Hold")})
     if tblp:
         st.dataframe(pd.DataFrame(tblp).set_index("Ticker"), use_container_width=True)
+        st.caption("**Signal** is the app's own medium-term trend read (same "
+                   "50/200-day + 3-month rule as the top-of-app strong alerts): "
+                   "🟢 Buy = clean uptrend, not overbought; 🔴 Sell = clean "
+                   "downtrend, not oversold; ⚪ Hold = everything else. It's a "
+                   "weeks-to-months momentum call, **not** advice to trade — "
+                   "short-term odds stay near a coin flip, and that's honest.")
         _big = [t["Ticker"] for t in tblp if float(t["Weight"].rstrip("%")) >= 30]
         if _big:
             st.warning("⚠️ **Concentration:** " + ", ".join(_big) + " is over 30% of "
