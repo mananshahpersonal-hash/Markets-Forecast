@@ -149,6 +149,12 @@ def _cached_live_quotes(symbols_tuple):
             out[s] = rec[0]
         else:
             to_fetch.append(s)
+    try:
+        print(f"[MH] quotes: {len(symbols_tuple)} requested, "
+              f"{len(out)} served from cache, {len(to_fetch)} to fetch: "
+              f"{to_fetch[:15]}", flush=True)
+    except Exception:
+        pass
     _r.shuffle(to_fetch)
     changed = False
     _ok = _fail = 0
@@ -789,6 +795,12 @@ if mode == "My Portfolio (CSV)":
         closes = {t: _batch.get(s) for t, s in price_syms.items()}
         # Finnhub live quotes keyed by holding ticker (reliable current price).
         _live_q = _cached_live_quotes(tuple(sorted(price_syms.keys())))
+        try:
+            print(f"[MH] price_syms has {len(price_syms)} tickers; "
+                  f"_live_q returned {len(_live_q)}; "
+                  f"holdings={len(holdings)}", flush=True)
+        except Exception:
+            pass
         if feed is not None:
             _n = len(_live_q)
             _tot_syms = len(price_syms)

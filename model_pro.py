@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v49 · 2026-08-30 · fix Python 3.14 dataclass crash (shim + runtime pin) + startup/fetch logging"
+BUILD = "v50 · 2026-08-30 · detailed price-fetch logging to pinpoint the 29-vs-38 filter"
 
 warnings.filterwarnings("ignore")
 
