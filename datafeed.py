@@ -167,22 +167,80 @@ def stooq_quote(symbol: str):
         return None
 
 
-def best_quote(symbol: str):
-    """Get a quote, trying the most reliable source first.
+def stockpricesdev_quote(symbol: str):
+    """Keyless JSON quote from stockprices.dev — no auth, no limits, covers US
+    stocks and ETFs. Documented response:
+      {"Ticker","Name","Price","ChangeAmount","ChangePercentage"}
+    Uses /api/stocks/<ticker>. Returns our standard dict or None."""
+    sym = symbol.replace(".", "-")           # class shares as BRK-B
+    url = f"https://stockprices.dev/api/stocks/{sym}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            d = json.load(r)
+        price = d.get("Price")
+        if not price:
+            return None
+        price = float(price)
+        chg = float(d.get("ChangeAmount") or 0.0)
+        pct = float(d.get("ChangePercentage") or 0.0)
+        return {"price": price, "prev_close": price - chg,
+                "change": chg, "pct": pct}
+    except Exception:
+        return None
 
-    Stooq is tried FIRST: it's keyless, has no rate limit, and covers both
-    stocks AND ETFs (QDTE, VXUS, SPYI...) — the exact things Finnhub's free tier
-    drops. Finnhub is the fallback for anything Stooq somehow misses. This order
-    is deliberate: it's what gets all 38 holdings priced instead of ~29."""
-    q = stooq_quote(symbol)
-    if q:
-        return q
-    q = finnhub_quote(symbol)
-    if q:
-        return q
+
+def best_quote(symbol: str):
+    """Get a quote from whichever keyless/low-limit source responds first.
+
+    Order is chosen for COVERAGE and reliability of US stocks AND ETFs:
+      1) stockprices.dev — keyless JSON, no limit, covers stocks + ETFs
+      2) Stooq — keyless CSV, covers stocks + ETFs
+      3) Finnhub — needs key, misses many ETFs on free tier (last resort)
+    Whichever returns a price first wins. Multiple independent sources mean a
+    single provider being down or blocking doesn't leave holdings unpriced —
+    which is what left ~9 tickers stale before."""
+    for src in (stockpricesdev_quote, stooq_quote, finnhub_quote):
+        try:
+            q = src(symbol)
+            if q and q.get("price"):
+                return q
+        except Exception:
+            continue
     return None
+
+
+def source_selftest(sample: str = "AAPL", etf: str = "QDTE"):
+    """Live-probe each source in the ACTUAL runtime environment and report which
+    ones return a price. Returns a list of (source_name, stock_ok, etf_ok,
+    detail). This is how we find out which feed works from where the app runs,
+    instead of guessing — because a stock like AAPL and an ETF like QDTE exercise
+    both coverage cases."""
+    out = []
+    for name, fn in (("stockprices.dev", stockpricesdev_quote),
+                     ("Stooq", stooq_quote),
+                     ("Finnhub", finnhub_quote)):
+        s_ok = e_ok = False
+        detail = ""
+        try:
+            qs = fn(sample); s_ok = bool(qs and qs.get("price"))
+            qe = fn(etf); e_ok = bool(qe and qe.get("price"))
+            if s_ok:
+                detail = f"{sample}=${qs['price']:.2f}"
+                if e_ok:
+                    detail += f", {etf}=${qe['price']:.2f}"
+                elif name == "Finnhub":
+                    detail += f", {etf}=not covered (free tier)"
+                else:
+                    detail += f", {etf}=no data"
+            else:
+                detail = "no response / blocked"
+        except Exception as ex:
+            detail = f"error: {str(ex)[:40]}"
+        out.append((name, s_ok, e_ok, detail))
+    return out
 
 
 def source_label() -> str:
     """Human tag for which feeds are active."""
-    return "Stooq + Finnhub" if have_finnhub() else "Stooq (keyless)"
+    return "multi-source" if have_finnhub() else "keyless (Stooq/stockprices)"

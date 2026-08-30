@@ -744,6 +744,25 @@ if mode == "My Portfolio (CSV)":
             else:
                 st.error(f"📡 Price feeds unreachable this refresh ({_src}). Using "
                          f"last known / cost. Reload in a minute.")
+            with st.expander("🔬 Diagnose price feeds (which sources work here?)"):
+                st.caption("Runs a live test of each price source from this app's "
+                           "server, on a stock (AAPL) and an ETF (QDTE), so we can "
+                           "see exactly which feed works in your environment.")
+                if st.button("Run feed test", key="feedtest"):
+                    with st.spinner("Testing sources…"):
+                        _res = feed.source_selftest()
+                    for _nm, _sok, _eok, _det in _res:
+                        _mark = "✅" if (_sok or _eok) else "❌"
+                        st.write(f"{_mark} **{_nm}** — {_det}")
+                    _any = any(s or e for _, s, e, _ in _res)
+                    if _any:
+                        st.success("At least one source works — the app will use "
+                                   "it. If some holdings are still stale, they'll "
+                                   "fill in on the next reload as each caches.")
+                    else:
+                        st.error("No source responded from this environment. That "
+                                 "points to an outbound-network restriction on the "
+                                 "host, not the code — tell me and I'll adapt.")
 
     total_val = total_cost = 0.0
     stale_val = 0.0            # value of positions running on fallback (no live price)
