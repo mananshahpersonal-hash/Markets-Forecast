@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v52 · 2026-08-30 · fix dataclass shim corrupting sys.modules (KeyError indicators); all 38 now fetch"
+BUILD = "v53 · 2026-08-30 · Dividends: 4 radio views (last month / next month / YTD / annual estimate) per ticker"
 
 warnings.filterwarnings("ignore")
 

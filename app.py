@@ -1289,36 +1289,106 @@ if mode == "My Portfolio (CSV)":
                        "Spreading out is the cheapest protection there is.")
 
     st.markdown("### 💵 Dividends")
-    if P is not None:
-        d1, d2, d3 = st.columns(3)
-        d1.metric("Last 30 days", f"${dv_sums['month']:,.2f}")
-        d2.metric("This year", f"${dv_sums['ytd']:,.2f}")
-        d3.metric("All time (in file)", f"${dv_sums['all']:,.2f}")
-    else:
-        st.caption("Add your Robinhood CSV above to see dividends actually received. "
-                   "Below is the forward estimate from your current holdings.")
-    proj = 0.0
-    _proj_est = False
+    # Build a per-ticker projected annual dividend map (live rate → verified table).
+    _proj_by_ticker = {}
     for inst, (shares, _avgc) in holdings.items():
         if sym_cls.get(inst) != "Stocks & ETFs":
             continue
-        rate = (_info.get(inst) or {}).get("div_rate")   # from 12h cache, no new call
+        rate = (_info.get(inst) or {}).get("div_rate")
         if not rate and pnl is not None and hasattr(pnl, "div_per_share"):
-            rate = pnl.div_per_share(inst)               # verified fallback
-            if rate:
-                _proj_est = True
+            rate = pnl.div_per_share(inst)
         if rate:
-            proj += float(rate) * shares
-    if proj > 0:
-        st.markdown(_md(f"**Projected income at current rates:** ~**${proj:,.0f}/year** "
-                    f"(≈ ${proj/12:,.0f}/month · ${proj/52:,.0f}/week)."))
-    st.caption("Honest note: dividends don't arrive daily — each fund pays weekly, "
-               "monthly, or quarterly on its own schedule, so a true 'per-day' "
-               "amount would be made up. The weekly/monthly figures are the fair "
-               "way to see it. Rates use the live feed where available; values "
-               "marked with * (and any fallback here) come from a **verified table "
-               "built from your own 2026 payments** so the column isn't blank when "
-               "the live feed is throttled.")
+            _proj_by_ticker[inst] = float(rate) * shares
+    _proj_total = sum(_proj_by_ticker.values())
+
+    _div_view = st.radio(
+        "Show", ["📅 Last month (received)", "🔮 Next month (expected)",
+                 "📆 This year (received)", "🎯 This year estimate (expected)"],
+        horizontal=True, key="div_view", label_visibility="collapsed")
+
+    if _div_view.startswith("📅"):
+        # Dividends actually received in the last 30 days: ticker, date, amount.
+        if P is not None and not dv.empty:
+            _cut = pd.Timestamp(now) - pd.Timedelta(days=30)
+            _d = dv.copy()
+            _d["date"] = pd.to_datetime(_d["date"], errors="coerce")
+            _recent = _d[_d["date"] >= _cut].sort_values("date", ascending=False)
+            if len(_recent):
+                _rows = [{"Ticker": r["instrument"],
+                          "Date": r["date"].strftime("%b %d, %Y"),
+                          "Amount": f"${r['amount']:,.2f}"}
+                         for _, r in _recent.iterrows()]
+                st.dataframe(pd.DataFrame(_rows).set_index("Ticker"),
+                             width='stretch', height=min(len(_rows)*35+40, 420))
+                st.caption(f"**{len(_rows)} payments** in the last 30 days · "
+                           f"total **${_recent['amount'].sum():,.2f}**. Actual "
+                           f"dividends received (from your Robinhood CSV).")
+            else:
+                st.info("No dividends received in the last 30 days.")
+        else:
+            st.info("Add your Robinhood CSV (above) to see dividends you actually "
+                    "received, by ticker and date.")
+
+    elif _div_view.startswith("🔮"):
+        # Expected dividends for NEXT month, per ticker = annual projection / 12.
+        if _proj_by_ticker:
+            _rows = [{"Ticker": t, "Expected next month": f"${v/12:,.2f}"}
+                     for t, v in sorted(_proj_by_ticker.items(), key=lambda x: -x[1])
+                     if v/12 >= 0.005]
+            st.dataframe(pd.DataFrame(_rows).set_index("Ticker"),
+                         width='stretch', height=min(len(_rows)*35+40, 460))
+            st.caption(f"Projected **${_proj_total/12:,.0f}** next month across "
+                       f"{len(_rows)} payers. Estimated from each holding's annual "
+                       f"distribution ÷ 12 (monthly funds pay ~this each month; "
+                       f"quarterly names pay their share in their payout months).")
+        else:
+            st.info("No dividend-paying holdings detected.")
+
+    elif _div_view.startswith("📆"):
+        # All dividends received THIS YEAR so far, totalled per ticker.
+        if P is not None and not dv.empty:
+            _d = dv.copy()
+            _d["date"] = pd.to_datetime(_d["date"], errors="coerce")
+            _ytd = _d[_d["date"] >= pd.Timestamp(now.year, 1, 1)]
+            if len(_ytd):
+                _by = _ytd.groupby("instrument")["amount"].agg(["sum", "count"])
+                _by = _by.sort_values("sum", ascending=False)
+                _rows = [{"Ticker": t,
+                          "Received YTD": f"${r['sum']:,.2f}",
+                          "Payments": int(r["count"])}
+                         for t, r in _by.iterrows()]
+                st.dataframe(pd.DataFrame(_rows).set_index("Ticker"),
+                             width='stretch', height=min(len(_rows)*35+40, 520))
+                st.caption(f"**${_ytd['amount'].sum():,.2f}** received so far in "
+                           f"{now.year} across {len(_rows)} tickers. Actual, from "
+                           f"your Robinhood CSV.")
+            else:
+                st.info(f"No dividends received yet in {now.year}.")
+        else:
+            st.info("Add your Robinhood CSV (above) to see this year's dividends "
+                    "by ticker.")
+
+    else:  # 🎯 This year estimate (expected)
+        # Expected FULL-YEAR dividend per ticker at current rates.
+        if _proj_by_ticker:
+            _rows = [{"Ticker": t, "Est. annual dividend": f"${v:,.2f}"}
+                     for t, v in sorted(_proj_by_ticker.items(), key=lambda x: -x[1])
+                     if v >= 0.01]
+            st.dataframe(pd.DataFrame(_rows).set_index("Ticker"),
+                         width='stretch', height=min(len(_rows)*35+40, 520))
+            st.caption(f"Projected **${_proj_total:,.0f}/year** "
+                       f"(≈ ${_proj_total/12:,.0f}/month · ${_proj_total/52:,.0f}/"
+                       f"week) across {len(_rows)} payers, at current distribution "
+                       f"rates on your current share counts. Estimate, not a "
+                       f"guarantee — funds can change payouts.")
+        else:
+            st.info("No dividend-paying holdings detected.")
+
+    st.caption("Dividends don't arrive daily — each fund pays weekly, monthly, or "
+               "quarterly on its own schedule, so a true 'per-day' figure would be "
+               "made up. Received figures are from your CSV; expected figures use "
+               "the live rate where available, otherwise a verified table built "
+               "from your own 2026 payments.")
 
     st.markdown("### 🧾 Illinois tax ESTIMATE — not tax advice")
     t1, t2, t3, t4 = st.columns(4)
