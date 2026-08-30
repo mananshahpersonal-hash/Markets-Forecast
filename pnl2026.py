@@ -365,3 +365,62 @@ def next_exdiv_date(ticker: str):
     if t in ("QDTE", "XDTE", "RDTE"):
         return "weekly"
     return None
+
+
+# ---------------------------------------------------------------------------
+# DIVIDEND PAYMENT FREQUENCY  (derived from your actual 2026 payment history,
+# corrected with public dividend-calendar knowledge for quarterly single-names)
+# ---------------------------------------------------------------------------
+# "weekly"  ~52 payments/yr (Roundhill 0DTE funds)
+# "monthly" ~12 payments/yr (NEOS/other income ETFs)
+# "quarterly" ~4 payments/yr (most single stocks + broad ETFs)
+DIV_FREQUENCY = {
+    # weekly
+    "QDTE": "weekly", "XDTE": "weekly", "RDTE": "weekly",
+    # monthly (income ETFs)
+    "QQQI": "monthly", "SPYI": "monthly", "IAUI": "monthly", "HYBI": "monthly",
+    "CSHI": "monthly", "QQQH": "monthly", "JEPI": "monthly", "JEPQ": "monthly",
+    "IWMI": "monthly", "IYRI": "monthly", "BTCI": "monthly", "BNDI": "monthly",
+    "SPHD": "monthly",
+    # quarterly (single names + broad ETFs)
+    "AAPL": "quarterly", "MSFT": "quarterly", "VZ": "quarterly", "T": "quarterly",
+    "PG": "quarterly", "NVDA": "quarterly", "PFE": "quarterly", "WMT": "quarterly",
+    "SCHD": "quarterly", "VXUS": "quarterly", "SPY": "quarterly", "VOO": "quarterly",
+    "MCD": "quarterly", "KO": "quarterly", "JNJ": "quarterly", "XOM": "quarterly",
+    "CVX": "quarterly", "ITOT": "quarterly", "VGT": "quarterly", "VOOG": "quarterly",
+    "QQQ": "quarterly", "GCOW": "quarterly", "EWZ": "quarterly", "COPX": "quarterly",
+}
+
+# Which calendar months each quarterly payer typically distributes in (1=Jan…).
+# Most follow a Mar/Jun/Sep/Dec or Feb/May/Aug/Nov cadence. Used to answer
+# "will this pay NEXT month?" accurately instead of smearing annual/12.
+QUARTERLY_MONTHS = {
+    "AAPL": {2, 5, 8, 11}, "MSFT": {3, 6, 9, 12}, "VZ": {2, 5, 8, 11},
+    "T": {2, 5, 8, 11}, "PG": {2, 5, 8, 11}, "NVDA": {3, 6, 9, 12},
+    "PFE": {3, 6, 9, 12}, "WMT": {1, 4, 6, 9}, "SCHD": {3, 6, 9, 12},
+    "VXUS": {3, 6, 9, 12}, "SPY": {3, 6, 9, 12}, "VOO": {3, 6, 9, 12},
+    "MCD": {3, 6, 9, 12}, "KO": {4, 7, 10, 12}, "ITOT": {3, 6, 9, 12},
+    "VGT": {3, 6, 9, 12}, "VOOG": {3, 6, 9, 12}, "QQQ": {3, 6, 9, 12},
+    "GCOW": {3, 6, 9, 12}, "EWZ": {1, 7}, "COPX": {6, 12},
+}
+
+
+def div_frequency(ticker: str) -> str:
+    return DIV_FREQUENCY.get(ticker.upper(), "quarterly")
+
+
+def expected_next_month(ticker: str, annual_amount: float, next_month: int) -> float:
+    """Accurate expected dividend for a SPECIFIC upcoming calendar month, given a
+    holding's total annual dividend. Weekly ≈ annual×(payments in a month)/52;
+    monthly = annual/12; quarterly = annual/4 ONLY if it pays that month, else 0.
+    This replaces the old (wrong) annual/12-for-everything."""
+    f = div_frequency(ticker)
+    if f == "weekly":
+        return annual_amount * 4.33 / 52.0        # ~4.33 weekly pays per month
+    if f == "monthly":
+        return annual_amount / 12.0
+    # quarterly: pays ~1/4 of annual, but only in its payout months
+    months = QUARTERLY_MONTHS.get(ticker.upper())
+    if months is None:
+        return annual_amount / 12.0               # unknown calendar → smooth
+    return annual_amount / 4.0 if next_month in months else 0.0

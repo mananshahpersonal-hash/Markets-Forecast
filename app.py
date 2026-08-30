@@ -1301,10 +1301,30 @@ if mode == "My Portfolio (CSV)":
             _proj_by_ticker[inst] = float(rate) * shares
     _proj_total = sum(_proj_by_ticker.values())
 
-    _div_view = st.radio(
-        "Show", ["📅 Last month (received)", "🔮 Next month (expected)",
-                 "📆 This year (received)", "🎯 This year estimate (expected)"],
-        horizontal=True, key="div_view", label_visibility="collapsed")
+    # Pre-compute each view's headline total so it shows on the radio button.
+    _tot_last = _tot_ytd = 0.0
+    if P is not None and not dv.empty:
+        _dd = dv.copy()
+        _dd["date"] = pd.to_datetime(_dd["date"], errors="coerce")
+        _tot_last = _dd[_dd["date"] >= pd.Timestamp(now) - pd.Timedelta(days=30)]["amount"].sum()
+        _tot_ytd = _dd[_dd["date"] >= pd.Timestamp(now.year, 1, 1)]["amount"].sum()
+    _tot_next = 0.0
+    _nm_label = (now.month % 12) + 1
+    if pnl is not None and hasattr(pnl, "expected_next_month"):
+        _tot_next = sum(pnl.expected_next_month(t, a, _nm_label)
+                        for t, a in _proj_by_ticker.items())
+    else:
+        _tot_next = _proj_total / 12
+    _tot_estyr = _proj_total
+
+    _opts = [
+        f"📅 Last month · ${_tot_last:,.0f}",
+        f"🔮 Next month · ${_tot_next:,.0f}",
+        f"📆 This year · ${_tot_ytd:,.0f}",
+        f"🎯 Year estimate · ${_tot_estyr:,.0f}",
+    ]
+    _div_view = st.radio("Show", _opts, horizontal=True, key="div_view",
+                         label_visibility="collapsed")
 
     if _div_view.startswith("📅"):
         # Dividends actually received in the last 30 days: ticker, date, amount.
@@ -1316,13 +1336,17 @@ if mode == "My Portfolio (CSV)":
             if len(_recent):
                 _rows = [{"Ticker": r["instrument"],
                           "Date": r["date"].strftime("%b %d, %Y"),
-                          "Amount": f"${r['amount']:,.2f}"}
+                          "Amount": round(float(r["amount"]), 2)}
                          for _, r in _recent.iterrows()]
-                st.dataframe(pd.DataFrame(_rows).set_index("Ticker"),
-                             width='stretch', height=min(len(_rows)*35+40, 420))
+                st.dataframe(
+                    pd.DataFrame(_rows).set_index("Ticker"),
+                    width='stretch', height=min(len(_rows)*35+40, 420),
+                    column_config={"Amount":
+                                   st.column_config.NumberColumn(format="$%.2f")})
                 st.caption(f"**{len(_rows)} payments** in the last 30 days · "
                            f"total **${_recent['amount'].sum():,.2f}**. Actual "
-                           f"dividends received (from your Robinhood CSV).")
+                           f"dividends received (from your Robinhood CSV). Click a "
+                           f"column header to re-sort.")
             else:
                 st.info("No dividends received in the last 30 days.")
         else:
@@ -1330,17 +1354,36 @@ if mode == "My Portfolio (CSV)":
                     "received, by ticker and date.")
 
     elif _div_view.startswith("🔮"):
-        # Expected dividends for NEXT month, per ticker = annual projection / 12.
-        if _proj_by_ticker:
-            _rows = [{"Ticker": t, "Expected next month": f"${v/12:,.2f}"}
-                     for t, v in sorted(_proj_by_ticker.items(), key=lambda x: -x[1])
-                     if v/12 >= 0.005]
-            st.dataframe(pd.DataFrame(_rows).set_index("Ticker"),
-                         width='stretch', height=min(len(_rows)*35+40, 460))
-            st.caption(f"Projected **${_proj_total/12:,.0f}** next month across "
-                       f"{len(_rows)} payers. Estimated from each holding's annual "
-                       f"distribution ÷ 12 (monthly funds pay ~this each month; "
-                       f"quarterly names pay their share in their payout months).")
+        # Expected dividends for NEXT calendar month, per ticker, FREQUENCY-AWARE:
+        # weekly funds pay ~4.3×/mo, monthly pay 1×, quarterly pay only in their
+        # payout months (else $0). Far more accurate than annual/12 for everyone.
+        _nm = (now.month % 12) + 1                 # next calendar month number
+        if _proj_by_ticker and pnl is not None and hasattr(pnl, "expected_next_month"):
+            _data = []
+            for t, annual in _proj_by_ticker.items():
+                exp = pnl.expected_next_month(t, annual, _nm)
+                if exp >= 0.005:
+                    _data.append({"Ticker": t,
+                                  "Expected next month": round(exp, 2),
+                                  "Pays": pnl.div_frequency(t)})
+            _data.sort(key=lambda r: -r["Expected next month"])
+            _nm_total = sum(r["Expected next month"] for r in _data)
+            if _data:
+                st.dataframe(
+                    pd.DataFrame(_data).set_index("Ticker"),
+                    width='stretch', height=min(len(_data)*35+40, 460),
+                    column_config={"Expected next month":
+                                   st.column_config.NumberColumn(format="$%.2f")})
+                import calendar as _cal
+                st.caption(f"Projected **${_nm_total:,.0f}** in "
+                           f"**{_cal.month_name[_nm]}** across {len(_data)} payers. "
+                           f"Weekly funds pay ~4-5×/month; monthly funds once; "
+                           f"quarterly names only in their payout months (so some "
+                           f"show $0 next month — that's correct, not missing).")
+            else:
+                import calendar as _cal
+                st.info(f"None of your holdings pay a dividend in "
+                        f"{_cal.month_name[_nm]}.")
         else:
             st.info("No dividend-paying holdings detected.")
 
@@ -1353,15 +1396,17 @@ if mode == "My Portfolio (CSV)":
             if len(_ytd):
                 _by = _ytd.groupby("instrument")["amount"].agg(["sum", "count"])
                 _by = _by.sort_values("sum", ascending=False)
-                _rows = [{"Ticker": t,
-                          "Received YTD": f"${r['sum']:,.2f}",
+                _rows = [{"Ticker": t, "Received YTD": round(float(r["sum"]), 2),
                           "Payments": int(r["count"])}
                          for t, r in _by.iterrows()]
-                st.dataframe(pd.DataFrame(_rows).set_index("Ticker"),
-                             width='stretch', height=min(len(_rows)*35+40, 520))
+                st.dataframe(
+                    pd.DataFrame(_rows).set_index("Ticker"),
+                    width='stretch', height=min(len(_rows)*35+40, 520),
+                    column_config={"Received YTD":
+                                   st.column_config.NumberColumn(format="$%.2f")})
                 st.caption(f"**${_ytd['amount'].sum():,.2f}** received so far in "
                            f"{now.year} across {len(_rows)} tickers. Actual, from "
-                           f"your Robinhood CSV.")
+                           f"your Robinhood CSV. Click a column header to re-sort.")
             else:
                 st.info(f"No dividends received yet in {now.year}.")
         else:
@@ -1371,16 +1416,19 @@ if mode == "My Portfolio (CSV)":
     else:  # 🎯 This year estimate (expected)
         # Expected FULL-YEAR dividend per ticker at current rates.
         if _proj_by_ticker:
-            _rows = [{"Ticker": t, "Est. annual dividend": f"${v:,.2f}"}
+            _rows = [{"Ticker": t, "Est. annual dividend": round(v, 2),
+                      "Pays": pnl.div_frequency(t) if (pnl and hasattr(pnl, "div_frequency")) else ""}
                      for t, v in sorted(_proj_by_ticker.items(), key=lambda x: -x[1])
                      if v >= 0.01]
-            st.dataframe(pd.DataFrame(_rows).set_index("Ticker"),
-                         width='stretch', height=min(len(_rows)*35+40, 520))
+            st.dataframe(
+                pd.DataFrame(_rows).set_index("Ticker"),
+                width='stretch', height=min(len(_rows)*35+40, 520),
+                column_config={"Est. annual dividend":
+                               st.column_config.NumberColumn(format="$%.2f")})
             st.caption(f"Projected **${_proj_total:,.0f}/year** "
-                       f"(≈ ${_proj_total/12:,.0f}/month · ${_proj_total/52:,.0f}/"
-                       f"week) across {len(_rows)} payers, at current distribution "
-                       f"rates on your current share counts. Estimate, not a "
-                       f"guarantee — funds can change payouts.")
+                       f"(≈ ${_proj_total/12:,.0f}/month avg) across {len(_rows)} "
+                       f"payers, at current distribution rates on your current "
+                       f"share counts. Estimate — funds can change payouts.")
         else:
             st.info("No dividend-paying holdings detected.")
 
