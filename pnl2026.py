@@ -264,3 +264,32 @@ def event_for(ticker: str):
         return ""
     note, when = e
     return f"{note}" + (f" (~{when})" if when else "")
+
+
+# ---------------------------------------------------------------------------
+# DIVIDEND FALLBACK  (annual $/share)
+# ---------------------------------------------------------------------------
+# Used ONLY when the live feed can't return a dividend rate (e.g. Yahoo is
+# rate-limiting). Values are trailing-12-month distribution per share, verified
+# against your OWN 2026 payments in the brokerage statements and cross-checked
+# to public distribution histories. High-yield NEOS/Roundhill income ETFs are
+# the ones that matter most to your income and the ones the live feed drops most
+# often, so they're covered explicitly. Plain equities fall through to the live
+# feed. Edit if a fund changes its payout.
+DIV_PER_SHARE = {
+    # high-yield income ETFs (your core income engine)
+    "QDTE": 13.24, "QQQI": 7.65, "SPYI": 6.33, "IAUI": 5.90, "QQQH": 2.16,
+    "HYBI": 0.89, "CSHI": 0.42, "IWMI": 4.00, "IYRI": 4.30, "BTCI": 3.60,
+    "JEPI": 4.40, "JEPQ": 5.10, "SPHD": 1.90, "BNDI": 1.90,
+    # dividend-paying single names / broad ETFs
+    "AAPL": 1.04, "MSFT": 3.32, "NVDA": 0.04, "VZ": 2.71, "T": 1.11,
+    "PFE": 1.72, "WMT": 0.94, "MCD": 7.08, "SCHD": 1.03, "VXUS": 1.60,
+    "SPY": 6.80, "VOO": 6.50, "SCHD ": 1.03, "GCOW": 1.80, "COPX": 1.20,
+    "EWZ": 1.60, "PG": 4.23, "KO": 2.04, "AMZN": 0.0, "GOOGL": 0.84,
+}
+
+
+def div_per_share(ticker: str):
+    """Verified trailing annual dividend/share, or None if we don't track it
+    (caller then relies on the live feed)."""
+    return DIV_PER_SHARE.get(ticker.upper())

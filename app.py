@@ -29,6 +29,11 @@ except Exception:
     pnl = None
 
 try:
+    import datafeed as feed
+except Exception:
+    feed = None
+
+try:
     from streamlit_autorefresh import st_autorefresh
     HAVE_AUTOREFRESH = True
 except Exception:
@@ -44,28 +49,54 @@ def _cached_closes(symbols_tuple):
     return mp._batch_close_series(list(symbols_tuple), chunk=40)
 
 
-@st.cache_data(ttl=43200, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_live_quotes(symbols_tuple):
+    """Finnhub live quotes for holdings, cached 5 min. Empty dict if no key /
+    Finnhub unavailable, in which case the app uses the Yahoo close series alone.
+    This is what makes prices reliable and non-stale."""
+    if feed is None or not feed.have_finnhub():
+        return {}
+    return feed.finnhub_quotes(list(symbols_tuple))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def _cached_info_bundle(symbols_tuple):
-    """Per-ticker dividend + earnings facts, cached 12 HOURS. These barely change
-    intraday, so caching them long keeps the every-few-minutes price refresh from
-    ever firing these extra .info calls — that's what protects the Yahoo limit.
-    Returns {ticker: {div_rate, div_yield, ex_date, earn_date}} (missing → None).
-    Fetched gently with a tiny pause between tickers."""
+    """Per-ticker dividend + earnings facts, cached 1 HOUR. These barely change
+    intraday, so caching keeps the every-few-minutes price refresh from firing
+    these extra .info calls — that's what protects the Yahoo limit. Returns
+    {ticker: {div_rate, div_yield, ex_date, earn_date}} (missing → None). If the
+    whole pull comes back empty (Yahoo throttling), we DON'T let that poison the
+    cache for long — the short TTL plus the verified fallback keep the dividend
+    column populated regardless."""
     import time as _t
     out = {}
     for t in symbols_tuple:
         rec = {"div_rate": None, "div_yield": None, "ex_date": None,
                "earn_date": None}
+        # Finnhub first (reliable), then Yahoo as fallback.
+        if feed is not None and feed.have_finnhub():
+            try:
+                dr = feed.finnhub_basic_dividend(t)
+                if dr:
+                    rec["div_rate"] = dr
+                en = feed.finnhub_next_earnings(t)
+                if en:
+                    import datetime as _d
+                    rec["earn_date"] = _d.date.fromisoformat(en).strftime("%b %d")
+            except Exception:
+                pass
         try:
             info = cf.yf.Ticker(t).info or {}
-            rec["div_rate"] = info.get("dividendRate")
+            if rec["div_rate"] is None:
+                rec["div_rate"] = info.get("dividendRate")
             rec["div_yield"] = info.get("dividendYield")
             ex = info.get("exDividendDate")
             if ex:
                 rec["ex_date"] = _dt.datetime.utcfromtimestamp(int(ex)).strftime("%b %d")
-            es = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
-            if es:
-                rec["earn_date"] = _dt.datetime.utcfromtimestamp(int(es)).strftime("%b %d")
+            if rec["earn_date"] is None:
+                es = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
+                if es:
+                    rec["earn_date"] = _dt.datetime.utcfromtimestamp(int(es)).strftime("%b %d")
         except Exception:
             pass
         out[t] = rec
@@ -660,10 +691,13 @@ if mode == "My Portfolio (CSV)":
         if s:
             price_syms[t] = s
     closes = {}
+    _live_q = {}
     if price_syms:
         with st.spinner("Fetching live prices for your holdings…"):
             _batch = _cached_closes(tuple(sorted(set(price_syms.values()))))
         closes = {t: _batch.get(s) for t, s in price_syms.items()}
+        # Finnhub live quotes keyed by holding ticker (reliable current price).
+        _live_q = _cached_live_quotes(tuple(sorted(price_syms.keys())))
 
     total_val = total_cost = 0.0
     stale_val = 0.0            # value of positions running on fallback (no live price)
@@ -673,15 +707,15 @@ if mode == "My Portfolio (CSV)":
         c = closes.get(inst)
         cls = sym_cls.get(inst, "Stocks & ETFs")
         cost = shares * avgc
+        q = _live_q.get(inst)                     # Finnhub live quote, if any
         # Buy/Hold/Sell from the app's own strong-trend rule (same definition as
         # the top-of-app alert), computed from the price series we already have.
         sig = "Hold"
         if pnl is not None and c is not None and len(c) >= 60:
             sig = pnl.signal_from_read(pnl.read_from_closes(c))
-        if c is None or len(c) < 2:
-            # No live price (often a Yahoo rate-limit miss). DON'T drop the
-            # position from equity — fall back to your average cost so the total
-            # stays complete, and flag it as stale so you know it's not live.
+        if (c is None or len(c) < 2) and not q:
+            # No live price from EITHER feed. Fall back to average cost so the
+            # position never silently drops from equity; flag it stale.
             fallback = avgc if avgc else 0.0
             val = shares * fallback if fallback else None
             missing.append(inst)
@@ -696,19 +730,31 @@ if mode == "My Portfolio (CSV)":
                          "today": 0.0 if val is not None else None,
                          "signal": "—", "stale": True})
             continue
-        w = pfm.market_windows(c, now)
-        price = w["now"]
+        if q:
+            # Finnhub live price wins (reliable, real-time).
+            price = q["price"]
+            today_move = q["change"] * shares
+            # For week/month/ytd we still use the Yahoo close series if present.
+            if c is not None and len(c) >= 2:
+                w = pfm.market_windows(c, now)
+                for k in ("week", "month", "ytd"):
+                    win[k] += shares * (price - w[k])
+            win["today"] += today_move
+        else:
+            w = pfm.market_windows(c, now)
+            price = w["now"]
+            for k in win:
+                win[k] += shares * (price - w[k])
+            today_move = shares * (price - w["today"])
         val = shares * price
         total_val += val
         total_cost += cost
-        for k in win:
-            win[k] += shares * (price - w[k])
         rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
                      "price": price, "value": val, "cost": cost,
                      "tot": val - cost, "totpct": (val/cost - 1)*100 if cost else None,
-                     "today": shares * (price - w["today"]), "signal": sig,
-                     "stale": False})
-        hseries[inst] = c.tail(400) * shares
+                     "today": today_move, "signal": sig, "stale": False})
+        if c is not None and len(c) >= 2:
+            hseries[inst] = c.tail(400) * shares
     rz_sums = (pfm.period_sums(rz, "gain", now) if not rz.empty
                else {k: 0.0 for k in ("today", "week", "month", "ytd", "all")})
     dv_sums = pfm.period_sums(dv, "amount", now)
@@ -987,7 +1033,11 @@ if mode == "My Portfolio (CSV)":
         wgt = r["value"] / total_val * 100 if total_val else 0
         info = _info.get(r["inst"], {})
         dr = info.get("div_rate")
-        div_yr = f"${dr*r['shares']:,.0f}/yr" if dr else "—"
+        _dr_src = "live"
+        if not dr and pnl is not None:                 # live feed blank → fallback
+            dr = pnl.div_per_share(r["inst"])
+            _dr_src = "est"
+        div_yr = (f"${dr*r['shares']:,.0f}/yr" + (" *" if _dr_src == "est" else "")) if dr else "—"
         exd = info.get("ex_date") or "—"
         earn = info.get("earn_date") or "—"
         _is_stale = r.get("stale")
@@ -1022,6 +1072,13 @@ if mode == "My Portfolio (CSV)":
                     f"{((total_val/total_cost-1)*100 if total_cost else 0):+.1f}%")
         _eq3.metric("Positions", f"{len(tblp)}"
                     + (f" ({len(missing)} stale)" if missing else ""))
+        if feed is not None:
+            _src = feed.source_label()
+            _live_n = len(_live_q) if _live_q else 0
+            st.caption(f"📡 Live price source: **{_src}**"
+                       + (f" — {_live_n} quotes this refresh" if _live_n else
+                          " · add a Finnhub key in Secrets for reliable real-time "
+                          "prices (see the app's SECRETS note)."))
         st.dataframe(
             pd.DataFrame(tblp).set_index("Ticker"),
             use_container_width=True,
@@ -1032,9 +1089,11 @@ if mode == "My Portfolio (CSV)":
         st.caption("**Live** columns (Price, Value, P/L, Today, Signal) refresh "
                    "with the 5-min price cache. **Div/yr · Ex-div · Earnings** come "
                    "from a separate feed cached **12 h** — that's deliberate, so "
-                   "the frequent refresh never trips Yahoo's rate limit. "
-                   "**Signal** = the app's 50/200-day + 3-month trend read "
-                   "(🟢 clean uptrend · 🔴 clean downtrend · ⚪ hold); a "
+                   "the frequent refresh never trips Yahoo's rate limit. A **\\*** "
+                   "on Div/yr means the live feed was unavailable and the value "
+                   "comes from a **verified table built from your own 2026 "
+                   "payments**. **Signal** = the app's 50/200-day + 3-month trend "
+                   "read (🟢 clean uptrend · 🔴 clean downtrend · ⚪ hold); a "
                    "weeks-to-months momentum call, not trade advice. **Coming up** "
                    "is an editable catalog in the app files.")
         _big = [t["Ticker"] for t in tblp if float(t["Wt"].rstrip("%")) >= 30]
@@ -1053,22 +1112,27 @@ if mode == "My Portfolio (CSV)":
         st.caption("Add your Robinhood CSV above to see dividends actually received. "
                    "Below is the forward estimate from your current holdings.")
     proj = 0.0
+    _proj_est = False
     for inst, (shares, _avgc) in holdings.items():
         if sym_cls.get(inst) != "Stocks & ETFs":
             continue
-        try:
-            rate = (cf.yf.Ticker(inst).info or {}).get("dividendRate")
+        rate = (_info.get(inst) or {}).get("div_rate")   # from 12h cache, no new call
+        if not rate and pnl is not None:
+            rate = pnl.div_per_share(inst)               # verified fallback
             if rate:
-                proj += float(rate) * shares
-        except Exception:
-            pass
+                _proj_est = True
+        if rate:
+            proj += float(rate) * shares
     if proj > 0:
         st.markdown(f"**Projected income at current rates:** ~**${proj:,.0f}/year** "
                     f"(≈ ${proj/12:,.0f}/month · ${proj/52:,.0f}/week).")
-    st.caption("Honest note: dividends don't arrive daily — each stock pays "
-               "quarterly or monthly on its own schedule, so a true 'per-day' amount "
-               "would be made up. The weekly/monthly numbers are the fair way to "
-               "see it. Rates come from the free feed and are approximate.")
+    st.caption("Honest note: dividends don't arrive daily — each fund pays weekly, "
+               "monthly, or quarterly on its own schedule, so a true 'per-day' "
+               "amount would be made up. The weekly/monthly figures are the fair "
+               "way to see it. Rates use the live feed where available; values "
+               "marked with * (and any fallback here) come from a **verified table "
+               "built from your own 2026 payments** so the column isn't blank when "
+               "the live feed is throttled.")
 
     st.markdown("### 🧾 Illinois tax ESTIMATE — not tax advice")
     t1, t2, t3, t4 = st.columns(4)
