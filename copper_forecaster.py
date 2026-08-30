@@ -183,14 +183,30 @@ def _deep_merge(base: dict, over: dict) -> dict:
 # 2. PRICE DATA + FEATURES
 # =============================================================================
 
+def _dl_retry(ticker, tries=4, **kw):
+    """yf.download with backoff on Yahoo 429 rate limits. Returns a dataframe or
+    an empty one after retries, so callers see 'no data' rather than a crash."""
+    import time as _t
+    delay = 1.5
+    for attempt in range(tries):
+        try:
+            return yf.download(ticker, **kw)
+        except Exception as e:
+            m = str(e).lower()
+            if ("429" in m or "too many" in m or "rate" in m) and attempt < tries - 1:
+                _t.sleep(delay); delay *= 2; continue
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
 def fetch_prices(ticker: str) -> tuple[pd.Series, pd.Series]:
     """Return (daily_close_10y, hourly_close_60d). Raises if yfinance missing."""
     if yf is None:
         raise RuntimeError("yfinance not installed. `pip install yfinance`.")
-    daily = yf.download(ticker, period="10y", interval="1d",
-                        auto_adjust=False, progress=False)
-    hourly = yf.download(ticker, period="60d", interval="60m",
-                         auto_adjust=False, progress=False)
+    daily = _dl_retry(ticker, period="10y", interval="1d",
+                      auto_adjust=False, progress=False)
+    hourly = _dl_retry(ticker, period="60d", interval="60m",
+                       auto_adjust=False, progress=False)
     d = _close_series(daily)
     h = _close_series(hourly)
     if d.empty:

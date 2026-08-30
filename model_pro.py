@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v30 · 2026-08-30 · 2026 P&L redesigned: hero + winners/losers + gold chart"
+BUILD = "v31 · 2026-08-30 · P&L redesign + Yahoo rate-limit retry/backoff/cache"
 
 warnings.filterwarnings("ignore")
 
@@ -1466,21 +1466,40 @@ SCAN_UNIVERSES = {
 }
 
 
+def _yf_download_retry(grp, tries: int = 4, **kw):
+    """yf.download with backoff on Yahoo rate limits (HTTP 429). Returns the
+    dataframe, or None after exhausting retries. A cold Streamlit boot fires many
+    requests at once and Yahoo throttles; retrying with a short wait clears it
+    most of the time instead of failing the whole page."""
+    import time as _t
+    delay = 1.5
+    for attempt in range(tries):
+        try:
+            return cf.yf.download(grp, **kw)
+        except Exception as e:
+            msg = str(e).lower()
+            rate = "429" in msg or "too many" in msg or "rate" in msg
+            if rate and attempt < tries - 1:
+                _t.sleep(delay)
+                delay *= 2          # 1.5s, 3s, 6s
+                continue
+            return None
+    return None
+
+
 def _batch_close_series(tickers, chunk: int = 40, progress=None,
                         base: float = 0.0, span: float = 1.0) -> dict:
     """Download many tickers in a few batched requests (rate-limit friendly) and
-    return {ticker: tz-naive close Series}. Failures are skipped, not raised."""
+    return {ticker: tz-naive close Series}. Failures are skipped, not raised.
+    Rate-limited batches are retried with backoff before giving up."""
     out = {}
     total = max(len(tickers), 1)
     done = 0
     for i in range(0, len(tickers), chunk):
         grp = tickers[i:i + chunk]
-        try:
-            data = cf.yf.download(grp, period="1y", interval="1d",
+        data = _yf_download_retry(grp, period="1y", interval="1d",
                                   group_by="ticker", auto_adjust=False,
                                   progress=False, threads=True)
-        except Exception:
-            data = None
         for t in grp:
             done += 1
             if progress:

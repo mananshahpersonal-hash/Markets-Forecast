@@ -37,6 +37,13 @@ except Exception:
 st.set_page_config(page_title="Markets forecast", page_icon="📈", layout="wide")
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_closes(symbols_tuple):
+    """Batched holdings-price fetch, cached 5 min so page reloads during a Yahoo
+    rate-limit window reuse the last good pull instead of re-hitting the API."""
+    return mp._batch_close_series(list(symbols_tuple), chunk=40)
+
+
 def fmtp(p):
     """Magnitude-aware price formatting (kept local so app.py never depends on
     model_pro for this)."""
@@ -626,7 +633,7 @@ if mode == "My Portfolio (CSV)":
     closes = {}
     if price_syms:
         with st.spinner("Fetching live prices for your holdings…"):
-            _batch = mp._batch_close_series(sorted(set(price_syms.values())), chunk=40)
+            _batch = _cached_closes(tuple(sorted(set(price_syms.values()))))
         closes = {t: _batch.get(s) for t, s in price_syms.items()}
 
     total_val = total_cost = 0.0
