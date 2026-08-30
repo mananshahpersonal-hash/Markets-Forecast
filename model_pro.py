@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v44 · 2026-08-30 · Finnhub-only (confirmed works incl ETFs); accumulate all 38 across auto-refreshes"
+BUILD = "v45 · 2026-08-30 · shuffle+missing-first quote fetch so all 38 rotate through Finnhub's rate limit"
 
 warnings.filterwarnings("ignore")
 

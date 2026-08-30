@@ -85,35 +85,42 @@ def _quote_cache():
 
 def _cached_live_quotes(symbols_tuple):
     """Return {symbol: quote}. Serves fresh cached successes immediately, and
-    each load fetches a bounded number of the still-missing/stale tickers so the
-    portfolio fills in fully within a couple of refreshes without ever tripping
-    Finnhub's per-minute limit. Only successes are stored, so failures retry."""
+    each load fetches the still-missing tickers FIRST (and in shuffled order) so
+    the same ones don't repeatedly land last and hit Finnhub's rate limit — that
+    was why the identical 9 stayed stale every reload. Only successes are stored,
+    so failures retry next load until the whole portfolio is covered."""
     import time as _t
+    import random as _r
     out = {}
     if feed is None:
         return out
     store = _quote_cache()
     now_ts = _t.time()
-    STALE = 900          # refresh a symbol if its cached quote is >15 min old
+    STALE = 900
     to_fetch = []
     for s in symbols_tuple:
         rec = store.get(s)
         if rec and (now_ts - rec[1]) < STALE:
-            out[s] = rec[0]            # fresh cached success
+            out[s] = rec[0]
         else:
             to_fetch.append(s)
-    # Fetch the missing/stale ones, paced under the rate limit. Cap per load so a
-    # cold start with 38 symbols spreads across ~2 loads instead of one long hang.
-    MAX_PER_LOAD = 40
-    for i, s in enumerate(to_fetch[:MAX_PER_LOAD]):
+    # Shuffle so no ticker is permanently last in line for the rate-limit budget.
+    _r.shuffle(to_fetch)
+    # Fetch as many as the per-minute budget allows this load; the rest come on
+    # the next (auto) refresh. ~50 calls/min is safe on Finnhub free tier.
+    fetched = 0
+    for s in to_fetch:
+        if fetched >= 45:
+            break
         try:
             q = feed.best_quote(s)
         except Exception:
             q = None
         if q and q.get("price"):
-            store[s] = (q, now_ts)     # keep only successes
+            store[s] = (q, now_ts)
             out[s] = q
-        _t.sleep(0.9)                  # ~66/min ceiling; safely paced
+        fetched += 1
+        _t.sleep(1.1)
     return out
 
 
