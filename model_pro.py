@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v36 · 2026-08-30 · fix pnl2026 packaging + guards + width deprecation"
+BUILD = "v37 · 2026-08-30 · fix chart HTML render + P&L crash-guard + loud Finnhub status"
 
 warnings.filterwarnings("ignore")
 

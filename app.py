@@ -42,6 +42,13 @@ except Exception:
 st.set_page_config(page_title="Markets forecast", page_icon="📈", layout="wide")
 
 
+def _html(s: str):
+    """Render raw HTML via st.markdown WITHOUT Streamlit's LaTeX processor
+    eating dollar-sign pairs. Any '$' in an HTML string makes Streamlit treat
+    the text between two '$' as math and destroys the markup, so we escape them."""
+    st.markdown(s.replace("$", "\\$"), unsafe_allow_html=True)
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_closes(symbols_tuple):
     """Batched holdings-price fetch, cached 5 min so page reloads during a Yahoo
@@ -698,6 +705,22 @@ if mode == "My Portfolio (CSV)":
         closes = {t: _batch.get(s) for t, s in price_syms.items()}
         # Finnhub live quotes keyed by holding ticker (reliable current price).
         _live_q = _cached_live_quotes(tuple(sorted(price_syms.keys())))
+        if feed is not None:
+            if feed.have_finnhub():
+                _n = len(_live_q)
+                if _n:
+                    st.success(f"📡 Live prices via **Finnhub ✓** — {_n} quotes "
+                               f"this refresh. Prices are real-time.")
+                else:
+                    st.error("📡 Finnhub key detected but **0 quotes came back** "
+                             "— the key may be inactive/rejected, or Finnhub is "
+                             "unreachable. Falling back to Yahoo. If this persists, "
+                             "regenerate the key on finnhub.io and re-save it in "
+                             "Secrets.")
+            else:
+                st.info("📡 No Finnhub key found in Secrets — using Yahoo (which "
+                        "rate-limits). Add FINNHUB_KEY in Settings → Secrets for "
+                        "reliable real-time prices. See SECRETS_SETUP.md.")
 
     total_val = total_cost = 0.0
     stale_val = 0.0            # value of positions running on fallback (no live price)
@@ -806,9 +829,9 @@ if mode == "My Portfolio (CSV)":
             _green = _chg >= 0
             _col = "#00C805" if _green else "#FF5000"
             st.markdown(f"<span style='font-size:22px;font-weight:700'>"
-                        f"${_seg.iloc[-1]:,.0f}</span> &nbsp; "
+                        f"\\${_seg.iloc[-1]:,.0f}</span> &nbsp; "
                         f"<span style='color:{_col};font-weight:600'>"
-                        f"{'▲' if _green else '▼'} ${abs(_chg):,.0f} "
+                        f"{'▲' if _green else '▼'} \\${abs(_chg):,.0f} "
                         f"({_pct:+.1f}%) · {_rng}</span>", unsafe_allow_html=True)
             try:
                 import altair as alt
@@ -856,170 +879,173 @@ if mode == "My Portfolio (CSV)":
 
     # ---------------- 2026 PROFIT & LOSS STATEMENT ----------------
     if pnl is not None:
-        GRN, RED = "#00C805", "#FF5000"
-        _gt = pnl.grand_total()
-        _pos = _gt >= 0
-        _col = GRN if _pos else RED
-        _arrow = "▲" if _pos else "▼"
+      try:
+          GRN, RED = "#00C805", "#FF5000"
+          _gt = pnl.grand_total()
+          _pos = _gt >= 0
+          _col = GRN if _pos else RED
+          _arrow = "▲" if _pos else "▼"
 
-        st.markdown("## 📊 Your 2026 so far")
+          st.markdown("## 📊 Your 2026 so far")
 
-        # ---- HERO: the one number, unmissable ----
-        _bg = "#0F2E24" if _pos else "#2E1414"
-        st.markdown(
-            f"""<div style="background:{_bg};border-radius:16px;padding:26px 28px;
-                 margin:6px 0 18px 0;">
-              <div style="color:#9aa;font-size:14px;letter-spacing:.04em;
-                   text-transform:uppercase;">Net profit &amp; loss · Jan 1 – {pnl.AS_OF}</div>
-              <div style="color:{_col};font-size:46px;font-weight:800;
-                   line-height:1.1;margin-top:4px;">{_arrow} ${abs(_gt):,.0f}</div>
-              <div style="color:#c9c9c4;font-size:15px;margin-top:8px;">
-                {"You're up on the year." if _pos else
-                 "You're down on the year — driven by stock losses (VKTX, MSTR) "
-                 "and gold futures, partly offset by copper futures and dividends."}
-              </div>
-            </div>""", unsafe_allow_html=True)
+          # ---- HERO: the one number, unmissable ----
+          _bg = "#0F2E24" if _pos else "#2E1414"
+          _html(
+              f"""<div style="background:{_bg};border-radius:16px;padding:26px 28px;
+                   margin:6px 0 18px 0;">
+                <div style="color:#9aa;font-size:14px;letter-spacing:.04em;
+                     text-transform:uppercase;">Net profit &amp; loss · Jan 1 – {pnl.AS_OF}</div>
+                <div style="color:{_col};font-size:46px;font-weight:800;
+                     line-height:1.1;margin-top:4px;">{_arrow} ${abs(_gt):,.0f}</div>
+                <div style="color:#c9c9c4;font-size:15px;margin-top:8px;">
+                  {"You're up on the year." if _pos else
+                   "You're down on the year — driven by stock losses (VKTX, MSTR) "
+                   "and gold futures, partly offset by copper futures and dividends."}
+                </div>
+              </div>""")
 
-        # ---- WHAT DROVE IT: contribution bars, biggest swing first ----
-        st.markdown("#### What drove it")
-        _drivers = sorted(pnl.summary_lines(), key=lambda l: -abs(l.amount))
-        _mx = max(abs(l.amount) for l in _drivers) or 1
-        _bar_html = ['<div style="display:flex;flex-direction:column;gap:9px;'
-                     'margin:4px 0 6px 0;">']
-        for l in _drivers:
-            up = l.amount >= 0
-            col = GRN if up else RED
-            frac = abs(l.amount) / _mx
-            w = max(frac * 46, 1.5)          # up to 46% of row width each side
-            approx = " ≈" if l.basis != "exact" else ""
-            left = f'<div style="flex:0 0 46%;text-align:right;padding-right:8px;">' \
-                   + (f'<span style="display:inline-block;height:18px;width:{w}%;'
-                      f'background:{RED};border-radius:3px 0 0 3px;vertical-align:middle;">'
-                      f'</span>' if not up else '') + '</div>'
-            right = f'<div style="flex:0 0 46%;padding-left:8px;">' \
-                    + (f'<span style="display:inline-block;height:18px;width:{w}%;'
-                       f'background:{GRN};border-radius:0 3px 3px 0;vertical-align:middle;">'
-                       f'</span>' if up else '') + '</div>'
-            _bar_html.append(
-                f'<div style="display:flex;align-items:center;font-size:13.5px;">'
-                f'{left}{right}</div>'
-                f'<div style="display:flex;font-size:12.5px;color:#6b6a66;'
-                f'margin-top:-6px;">'
-                f'<div style="flex:0 0 46%;text-align:right;padding-right:8px;">'
-                f'{l.label}{approx}</div>'
-                f'<div style="flex:0 0 8%;text-align:center;color:{col};'
-                f'font-weight:700;">${l.amount:+,.0f}</div>'
-                f'<div style="flex:0 0 46%;"></div></div>')
-        _bar_html.append('</div>')
-        st.markdown("".join(_bar_html), unsafe_allow_html=True)
-        st.caption("Green = added to your year · red = took away. Longest bar = "
-                   "biggest swing. “≈” means an approximate line (see note below).")
+          # ---- WHAT DROVE IT: contribution bars, biggest swing first ----
+          st.markdown("#### What drove it")
+          _drivers = sorted(pnl.summary_lines(), key=lambda l: -abs(l.amount))
+          _mx = max(abs(l.amount) for l in _drivers) or 1
+          _bar_html = ['<div style="display:flex;flex-direction:column;gap:9px;'
+                       'margin:4px 0 6px 0;">']
+          for l in _drivers:
+              up = l.amount >= 0
+              col = GRN if up else RED
+              frac = abs(l.amount) / _mx
+              w = max(frac * 46, 1.5)          # up to 46% of row width each side
+              approx = " ≈" if l.basis != "exact" else ""
+              left = f'<div style="flex:0 0 46%;text-align:right;padding-right:8px;">' \
+                     + (f'<span style="display:inline-block;height:18px;width:{w}%;'
+                        f'background:{RED};border-radius:3px 0 0 3px;vertical-align:middle;">'
+                        f'</span>' if not up else '') + '</div>'
+              right = f'<div style="flex:0 0 46%;padding-left:8px;">' \
+                      + (f'<span style="display:inline-block;height:18px;width:{w}%;'
+                         f'background:{GRN};border-radius:0 3px 3px 0;vertical-align:middle;">'
+                         f'</span>' if up else '') + '</div>'
+              _bar_html.append(
+                  f'<div style="display:flex;align-items:center;font-size:13.5px;">'
+                  f'{left}{right}</div>'
+                  f'<div style="display:flex;font-size:12.5px;color:#6b6a66;'
+                  f'margin-top:-6px;">'
+                  f'<div style="flex:0 0 46%;text-align:right;padding-right:8px;">'
+                  f'{l.label}{approx}</div>'
+                  f'<div style="flex:0 0 8%;text-align:center;color:{col};'
+                  f'font-weight:700;">${l.amount:+,.0f}</div>'
+                  f'<div style="flex:0 0 46%;"></div></div>')
+          _bar_html.append('</div>')
+          _html("".join(_bar_html))
+          st.caption("Green = added to your year · red = took away. Longest bar = "
+                     "biggest swing. “≈” means an approximate line (see note below).")
 
-        # ---- the statement, as clean metrics not a monospace dump ----
-        st.markdown("#### The lines")
-        _lines = pnl.summary_lines()
-        for i in range(0, len(_lines), 2):
-            cols = st.columns(2)
-            for col, l in zip(cols, _lines[i:i+2]):
-                tag = "✅" if l.basis == "exact" else "≈"
-                col.metric(f"{tag} {l.label}", f"${l.amount:+,.0f}")
+          # ---- the statement, as clean metrics not a monospace dump ----
+          st.markdown("#### The lines")
+          _lines = pnl.summary_lines()
+          for i in range(0, len(_lines), 2):
+              cols = st.columns(2)
+              for col, l in zip(cols, _lines[i:i+2]):
+                  tag = "✅" if l.basis == "exact" else "≈"
+                  col.metric(f"{tag} {l.label}", f"${l.amount:+,.0f}")
 
-        st.divider()
+          st.divider()
 
-        # ---- STOCKS: winners vs losers, ranked ----
-        _sales_ok = [s for s in pnl.STOCK_SALES if s.gain is not None]
-        _win = sorted([s for s in _sales_ok if s.gain > 0], key=lambda s: -s.gain)
-        _los = sorted([s for s in _sales_ok if s.gain < 0], key=lambda s: s.gain)
-        st.markdown("#### 📉 The 17 stocks you sold")
-        cW, cL = st.columns(2)
-        cW.markdown(f"<div style='color:{GRN};font-weight:700;'>Winners "
-                    f"(+${sum(s.gain for s in _win):,.0f})</div>",
-                    unsafe_allow_html=True)
-        cW.dataframe(pd.DataFrame(
-            [{"Ticker": s.ticker, "Gain": f"+${s.gain:,.0f}"} for s in _win]
-            ).set_index("Ticker"), width='stretch', height=min(len(_win)*35+38, 460))
-        cL.markdown(f"<div style='color:{RED};font-weight:700;'>Losers "
-                    f"(−${abs(sum(s.gain for s in _los)):,.0f})</div>",
-                    unsafe_allow_html=True)
-        cL.dataframe(pd.DataFrame(
-            [{"Ticker": s.ticker, "Loss": f"−${abs(s.gain):,.0f}"} for s in _los]
-            ).set_index("Ticker"), width='stretch', height=min(len(_los)*35+38, 460))
-        st.caption(f"Two positions did the damage: **VKTX −$50,802** and "
-                   f"**MSTR −$57,293**, both long-term. Everything reconciles to "
-                   f"your Robinhood proceeds. Net realized: "
-                   f"**${pnl.STOCK_REALIZED_KNOWN.amount:+,.0f}** "
-                   f"(short-term +${pnl.STOCK_ST:,.0f} · long-term ${pnl.STOCK_LT:+,.0f}).")
-        with st.expander("See all 17 with cost basis & term"):
-            _srows = [{
-                "Ticker": s.ticker, "Shares": f"{s.shares:g}",
-                "Proceeds": f"${s.proceeds:,.0f}",
-                "Cost": f"${s.cost:,.0f}" if s.cost is not None else "—",
-                "Gain/loss": f"${s.gain:+,.0f}" if s.gain is not None else "⏳",
-                "Term": ("ST" if s.st_gain and not s.lt_gain else
-                         "LT" if s.lt_gain and not s.st_gain else
-                         "ST+LT" if (s.st_gain or s.lt_gain) else "—")}
-                for s in pnl.STOCK_SALES]
-            st.dataframe(pd.DataFrame(_srows).set_index("Ticker"),
-                         width='stretch')
+          # ---- STOCKS: winners vs losers, ranked ----
+          _sales_ok = [s for s in pnl.STOCK_SALES if s.gain is not None]
+          _win = sorted([s for s in _sales_ok if s.gain > 0], key=lambda s: -s.gain)
+          _los = sorted([s for s in _sales_ok if s.gain < 0], key=lambda s: s.gain)
+          st.markdown("#### 📉 The 17 stocks you sold")
+          cW, cL = st.columns(2)
+          cW.markdown((f"<div style='color:{GRN};font-weight:700;'>Winners "
+                       f"(+${sum(s.gain for s in _win):,.0f})</div>").replace("$", "\\$"),
+                      unsafe_allow_html=True)
+          cW.dataframe(pd.DataFrame(
+              [{"Ticker": s.ticker, "Gain": f"+${s.gain:,.0f}"} for s in _win]
+              ).set_index("Ticker"), width='stretch', height=min(len(_win)*35+38, 460))
+          cL.markdown((f"<div style='color:{RED};font-weight:700;'>Losers "
+                       f"(−${abs(sum(s.gain for s in _los)):,.0f})</div>").replace("$", "\\$"),
+                      unsafe_allow_html=True)
+          cL.dataframe(pd.DataFrame(
+              [{"Ticker": s.ticker, "Loss": f"−${abs(s.gain):,.0f}"} for s in _los]
+              ).set_index("Ticker"), width='stretch', height=min(len(_los)*35+38, 460))
+          st.caption(f"Two positions did the damage: **VKTX −$50,802** and "
+                     f"**MSTR −$57,293**, both long-term. Everything reconciles to "
+                     f"your Robinhood proceeds. Net realized: "
+                     f"**${pnl.STOCK_REALIZED_KNOWN.amount:+,.0f}** "
+                     f"(short-term +${pnl.STOCK_ST:,.0f} · long-term ${pnl.STOCK_LT:+,.0f}).")
+          with st.expander("See all 17 with cost basis & term"):
+              _srows = [{
+                  "Ticker": s.ticker, "Shares": f"{s.shares:g}",
+                  "Proceeds": f"${s.proceeds:,.0f}",
+                  "Cost": f"${s.cost:,.0f}" if s.cost is not None else "—",
+                  "Gain/loss": f"${s.gain:+,.0f}" if s.gain is not None else "⏳",
+                  "Term": ("ST" if s.st_gain and not s.lt_gain else
+                           "LT" if s.lt_gain and not s.st_gain else
+                           "ST+LT" if (s.st_gain or s.lt_gain) else "—")}
+                  for s in pnl.STOCK_SALES]
+              st.dataframe(pd.DataFrame(_srows).set_index("Ticker"),
+                           width='stretch')
 
-        st.divider()
+          st.divider()
 
-        # ---- FUTURES: gold vs copper, the real story ----
-        st.markdown("#### 🥇 Futures — gold vs copper")
-        _gold = pnl.FUTURES_BY_CONTRACT["Gold (GC + MGC)"]
-        _copper = pnl.FUTURES_BY_CONTRACT["Copper (HG + MHG)"]
-        fc1, fc2, fc3 = st.columns(3)
-        fc1.metric("🥇 Gold (GC+MGC)", f"${_gold:+,.0f}", "big loss", delta_color="off")
-        fc2.metric("🟠 Copper (HG+MHG)", f"${_copper:+,.0f}", "big win", delta_color="off")
-        fc3.metric("Net futures (Jan–Jul)", f"${pnl.FUTURES_TOTAL.amount:+,.0f}",
-                   "copper > gold")
-        st.markdown(
-            f"""<div style="background:#F6F5EF;border-left:7px solid {RED};
-                 border-radius:8px;padding:12px 16px;margin:6px 0;">
-              <b>Gold was wildly volatile.</b> You made <span style="color:{GRN};
-              font-weight:700;">+$80,489 in January</span>, then gave most of it
-              back: <span style="color:{RED};font-weight:700;">−$59,419 in March</span>
-              and <span style="color:{RED};font-weight:700;">−$39,504 in May</span>.
-              Gold losing months totalled about −$111k; January's win left the
-              year at <b>−$30,333</b> net. Copper (+$43,928) is the only reason
-              futures finished positive overall.
-            </div>""", unsafe_allow_html=True)
+          # ---- FUTURES: gold vs copper, the real story ----
+          st.markdown("#### 🥇 Futures — gold vs copper")
+          _gold = pnl.FUTURES_BY_CONTRACT["Gold (GC + MGC)"]
+          _copper = pnl.FUTURES_BY_CONTRACT["Copper (HG + MHG)"]
+          fc1, fc2, fc3 = st.columns(3)
+          fc1.metric("🥇 Gold (GC+MGC)", f"${_gold:+,.0f}", "big loss", delta_color="off")
+          fc2.metric("🟠 Copper (HG+MHG)", f"${_copper:+,.0f}", "big win", delta_color="off")
+          fc3.metric("Net futures (Jan–Jul)", f"${pnl.FUTURES_TOTAL.amount:+,.0f}",
+                     "copper > gold")
+          _html(
+              f"""<div style="background:#F6F5EF;border-left:7px solid {RED};
+                   border-radius:8px;padding:12px 16px;margin:6px 0;">
+                <b>Gold was wildly volatile.</b> You made <span style="color:{GRN};
+                font-weight:700;">+$80,489 in January</span>, then gave most of it
+                back: <span style="color:{RED};font-weight:700;">−$59,419 in March</span>
+                and <span style="color:{RED};font-weight:700;">−$39,504 in May</span>.
+                Gold losing months totalled about −$111k; January's win left the
+                year at <b>−$30,333</b> net. Copper (+$43,928) is the only reason
+                futures finished positive overall.
+              </div>""")
 
-        # gold monthly mini-chart
-        _gold_by_month = {
-            "Jan": 80489, "Feb": -10459, "Mar": -59419, "Apr": -1770,
-            "May": -39504, "Jun": 274, "Jul": 56}
-        try:
-            import altair as alt
-            _gdf = pd.DataFrame({"Month": list(_gold_by_month),
-                                 "Gold P&L": list(_gold_by_month.values())})
-            _gdf["c"] = _gdf["Gold P&L"].apply(lambda v: GRN if v >= 0 else RED)
-            _ch = alt.Chart(_gdf).mark_bar().encode(
-                x=alt.X("Month:N", sort=list(_gold_by_month),
-                        axis=alt.Axis(title=None, labelColor="#9aa")),
-                y=alt.Y("Gold P&L:Q", axis=alt.Axis(title=None, labelColor="#9aa")),
-                color=alt.Color("c:N", scale=None))
-            st.altair_chart(_ch.properties(height=190), width='stretch')
-            st.caption("Gold futures realized P&L by month — the January spike, "
-                       "then the March and May drawdowns.")
-        except Exception:
-            pass
+          # gold monthly mini-chart
+          _gold_by_month = {
+              "Jan": 80489, "Feb": -10459, "Mar": -59419, "Apr": -1770,
+              "May": -39504, "Jun": 274, "Jul": 56}
+          try:
+              import altair as alt
+              _gdf = pd.DataFrame({"Month": list(_gold_by_month),
+                                   "Gold P&L": list(_gold_by_month.values())})
+              _gdf["c"] = _gdf["Gold P&L"].apply(lambda v: GRN if v >= 0 else RED)
+              _ch = alt.Chart(_gdf).mark_bar().encode(
+                  x=alt.X("Month:N", sort=list(_gold_by_month),
+                          axis=alt.Axis(title=None, labelColor="#9aa")),
+                  y=alt.Y("Gold P&L:Q", axis=alt.Axis(title=None, labelColor="#9aa")),
+                  color=alt.Color("c:N", scale=None))
+              st.altair_chart(_ch.properties(height=190), width='stretch')
+              st.caption("Gold futures realized P&L by month — the January spike, "
+                         "then the March and May drawdowns.")
+          except Exception:
+              pass
 
-        with st.expander("Futures — full month-by-month (each ties to the RHD statement)"):
-            _frows = [{"Month": m, "Realized P&L": f"${l.amount:+,.0f}"}
-                      for m, l in pnl.FUTURES_MONTHLY.items()]
-            st.dataframe(pd.DataFrame(_frows).set_index("Month"),
-                         width='stretch')
-            st.caption("Each month = Gross P&L + commissions/fees from the RHD "
-                       "statement, reconciled to the cash-balance identity and the "
-                       "Purchase-and-Sale rows. August pending (~Sep 1).")
+          with st.expander("Futures — full month-by-month (each ties to the RHD statement)"):
+              _frows = [{"Month": m, "Realized P&L": f"${l.amount:+,.0f}"}
+                        for m, l in pnl.FUTURES_MONTHLY.items()]
+              st.dataframe(pd.DataFrame(_frows).set_index("Month"),
+                           width='stretch')
+              st.caption("Each month = Gross P&L + commissions/fees from the RHD "
+                         "statement, reconciled to the cash-balance identity and the "
+                         "Purchase-and-Sale rows. August pending (~Sep 1).")
 
-        st.info("**Reading the tags:** ✅ exact = reconciled to your Robinhood "
-                "statements. ≈ approx = options (cash-basis; assigned options flow "
-                "into stock cost basis, so no double-count) and crypto "
-                "(mark-to-market — the statements carry no coin cost basis). "
-                "Estimates for planning, not tax filing.")
-        st.divider()
+          st.info("**Reading the tags:** ✅ exact = reconciled to your Robinhood "
+                  "statements. ≈ approx = options (cash-basis; assigned options flow "
+                  "into stock cost basis, so no double-count) and crypto "
+                  "(mark-to-market — the statements carry no coin cost basis). "
+                  "Estimates for planning, not tax filing.")
+          st.divider()
+      except Exception as _e:
+          st.warning('The 2026 P&L panel hit an error and was skipped — the rest of the page is fine. ' + str(_e)[:160])
 
     st.markdown("### 📋 Holdings")
     _priced = [x for x in rows if x["value"]]
