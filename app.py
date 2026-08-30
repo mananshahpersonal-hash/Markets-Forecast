@@ -83,18 +83,53 @@ def _quote_cache():
     return st.session_state["_quote_store"]
 
 
+import json as _json
+
+
+def _price_cache_path():
+    return mp.STATE_DIR / "live_prices.json"
+
+
+def _load_disk_prices():
+    """Load persisted prices {symbol: [price, prev_close, change, pct, ts]}.
+    Disk-backed so successful quotes survive reruns AND app reboots — this is
+    what lets the portfolio accumulate all 38 over time instead of resetting to
+    the same 29 every restart."""
+    try:
+        p = _price_cache_path()
+        if p.exists():
+            return _json.loads(p.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _save_disk_prices(d):
+    try:
+        mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _price_cache_path().write_text(_json.dumps(d))
+    except Exception:
+        pass
+
+
 def _cached_live_quotes(symbols_tuple):
-    """Return {symbol: quote}. Serves fresh cached successes immediately, and
-    each load fetches the still-missing tickers FIRST (and in shuffled order) so
-    the same ones don't repeatedly land last and hit Finnhub's rate limit — that
-    was why the identical 9 stayed stale every reload. Only successes are stored,
-    so failures retry next load until the whole portfolio is covered."""
+    """Return {symbol: quote}. Merges a disk-persisted price cache (survives
+    reruns/reboots) with fresh fetches. Each load fetches the still-missing or
+    stale tickers first, shuffled, capped to stay under Finnhub's rate limit; the
+    rest are served from the persisted cache. Over a few refreshes every holding
+    gets priced and STAYS priced. Only successes are written."""
     import time as _t
     import random as _r
     out = {}
     if feed is None:
         return out
+    disk = _load_disk_prices()
     store = _quote_cache()
+    # seed session store from disk on first run
+    for s, v in disk.items():
+        if s not in store:
+            store[s] = ({"price": v[0], "prev_close": v[1], "change": v[2],
+                         "pct": v[3]}, v[4])
     now_ts = _t.time()
     STALE = 900
     to_fetch = []
@@ -104,13 +139,11 @@ def _cached_live_quotes(symbols_tuple):
             out[s] = rec[0]
         else:
             to_fetch.append(s)
-    # Shuffle so no ticker is permanently last in line for the rate-limit budget.
     _r.shuffle(to_fetch)
-    # Fetch as many as the per-minute budget allows this load; the rest come on
-    # the next (auto) refresh. ~50 calls/min is safe on Finnhub free tier.
     fetched = 0
+    changed = False
     for s in to_fetch:
-        if fetched >= 45:
+        if fetched >= 20:            # conservative per-load cap (safe if limit=30/min)
             break
         try:
             q = feed.best_quote(s)
@@ -118,9 +151,19 @@ def _cached_live_quotes(symbols_tuple):
             q = None
         if q and q.get("price"):
             store[s] = (q, now_ts)
+            disk[s] = [q["price"], q.get("prev_close", q["price"]),
+                       q.get("change", 0.0), q.get("pct", 0.0), now_ts]
             out[s] = q
+            changed = True
         fetched += 1
         _t.sleep(1.1)
+    # Also serve any still-missing from disk even if stale (better than cost).
+    for s in symbols_tuple:
+        if s not in out and s in disk:
+            v = disk[s]
+            out[s] = {"price": v[0], "prev_close": v[1], "change": v[2], "pct": v[3]}
+    if changed:
+        _save_disk_prices(disk)
     return out
 
 

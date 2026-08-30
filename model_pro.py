@@ -57,7 +57,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v45 · 2026-08-30 · shuffle+missing-first quote fetch so all 38 rotate through Finnhub's rate limit"
+BUILD = "v46 · 2026-08-30 · disk-persisted price cache: all 38 accumulate across loads & survive reboots"
 
 warnings.filterwarnings("ignore")
 
