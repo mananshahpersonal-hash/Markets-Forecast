@@ -666,6 +666,7 @@ if mode == "My Portfolio (CSV)":
         closes = {t: _batch.get(s) for t, s in price_syms.items()}
 
     total_val = total_cost = 0.0
+    stale_val = 0.0            # value of positions running on fallback (no live price)
     win = {"today": 0.0, "week": 0.0, "month": 0.0, "ytd": 0.0}
     rows, hseries, missing = [], {}, []
     for inst, (shares, avgc) in holdings.items():
@@ -678,10 +679,22 @@ if mode == "My Portfolio (CSV)":
         if pnl is not None and c is not None and len(c) >= 60:
             sig = pnl.signal_from_read(pnl.read_from_closes(c))
         if c is None or len(c) < 2:
+            # No live price (often a Yahoo rate-limit miss). DON'T drop the
+            # position from equity — fall back to your average cost so the total
+            # stays complete, and flag it as stale so you know it's not live.
+            fallback = avgc if avgc else 0.0
+            val = shares * fallback if fallback else None
             missing.append(inst)
+            if val is not None:
+                total_val += val
+                total_cost += cost
+                stale_val += val
             rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
-                         "price": None, "value": None, "cost": cost,
-                         "tot": None, "totpct": None, "today": None, "signal": "—"})
+                         "price": fallback or None, "value": val, "cost": cost,
+                         "tot": 0.0 if val is not None else None,
+                         "totpct": 0.0 if val is not None else None,
+                         "today": 0.0 if val is not None else None,
+                         "signal": "—", "stale": True})
             continue
         w = pfm.market_windows(c, now)
         price = w["now"]
@@ -693,7 +706,8 @@ if mode == "My Portfolio (CSV)":
         rows.append({"inst": inst, "class": cls, "shares": shares, "avgc": avgc,
                      "price": price, "value": val, "cost": cost,
                      "tot": val - cost, "totpct": (val/cost - 1)*100 if cost else None,
-                     "today": shares * (price - w["today"]), "signal": sig})
+                     "today": shares * (price - w["today"]), "signal": sig,
+                     "stale": False})
         hseries[inst] = c.tail(400) * shares
     rz_sums = (pfm.period_sums(rz, "gain", now) if not rz.empty
                else {k: 0.0 for k in ("today", "week", "month", "ytd", "all")})
@@ -701,20 +715,30 @@ if mode == "My Portfolio (CSV)":
 
     st.markdown("### 💰 Right now")
     _tot_unreal = total_val - total_cost
+    _live_val = total_val - stale_val
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Portfolio value", f"${total_val:,.0f}")
+    m1.metric("Portfolio value", f"${total_val:,.0f}",
+              (f"{stale_val/total_val*100:.0f}% at cost (no live price)"
+               if stale_val and total_val else None), delta_color="off")
     m2.metric("Total gain/loss",
               f"${_tot_unreal:+,.0f}",
               f"{(_tot_unreal/total_cost*100 if total_cost else 0):+.1f}%")
     m3.metric("Today", f"${win['today']:+,.0f}")
     m4.metric("This year (price)", f"${win['ytd']:+,.0f}")
     if missing:
-        st.caption("⚠️ No live price yet for: " + ", ".join(missing) + " (Yahoo may be "
-                   "throttling, or the symbol differs). Its value isn't in the totals "
-                   "above — reload in a minute.")
-    st.caption("Value & gains use **live prices** on your holdings. 'Today/This year' "
-               "are price moves on current holdings; add the CSV for dividends & "
-               "realized gains. Turn on 🔴 Live updates to refresh every ~5 min.")
+        st.warning(
+            f"⚠️ **{len(missing)} position(s) have no live price right now** "
+            f"({', '.join(missing)}) — Yahoo is likely rate-limiting. To keep your "
+            f"total complete, these are valued at your **average cost** for now "
+            f"(${stale_val:,.0f}, {stale_val/total_val*100:.0f}% of the total). "
+            f"The real value is likely higher; reload in a minute, or add a "
+            f"Finnhub key for a reliable feed. Gain/loss on these shows $0 until a "
+            f"live price returns.")
+    st.caption("Value & gains use **live prices** where available; any position "
+               "without one falls back to your average cost (flagged above) so it "
+               "never silently drops out of the total. 'Today/This year' are price "
+               "moves on live-priced holdings. Turn on 🔴 Live updates to refresh "
+               "every ~5 min.")
     if hseries:
         _hdf = pd.DataFrame(hseries).ffill()
         _tot = _hdf.sum(axis=1).dropna()
@@ -963,23 +987,23 @@ if mode == "My Portfolio (CSV)":
         wgt = r["value"] / total_val * 100 if total_val else 0
         info = _info.get(r["inst"], {})
         dr = info.get("div_rate")
-        div_ps = f"${dr:,.2f}/sh" if dr else "—"
         div_yr = f"${dr*r['shares']:,.0f}/yr" if dr else "—"
         exd = info.get("ex_date") or "—"
         earn = info.get("earn_date") or "—"
-        # Long-term if the position has been held > 1 year. We don't have per-lot
-        # dates for current holdings, so this is a holding-level hint from average
-        # cost presence; shown as "—" when unknown rather than guessed.
+        _is_stale = r.get("stale")
         ev = pnl.event_for(r["inst"]) if pnl is not None else ""
         tblp.append({
             "Ticker": r["inst"],
             "Shares": f"{r['shares']:g}",
             "Avg cost": f"${r['avgc']:,.2f}" if r["avgc"] else "—",
-            "Price": f"${r['price']:,.2f}",
-            "Value": f"${r['value']:,.0f}",
-            "P/L $": f"${r['tot']:+,.0f}" if r["avgc"] else "—",
-            "P/L %": f"{r['totpct']:+.1f}%" if (r["avgc"] and r["totpct"] is not None) else "—",
-            "Today": f"${r['today']:+,.0f}",
+            "Price": (f"${r['price']:,.2f} ⚠️" if _is_stale and r["price"]
+                      else f"${r['price']:,.2f}" if r["price"] else "—"),
+            "Value": f"${r['value']:,.0f}" if r["value"] is not None else "—",
+            "P/L $": ("(no live px)" if _is_stale else
+                      f"${r['tot']:+,.0f}" if r["avgc"] else "—"),
+            "P/L %": ("—" if _is_stale else
+                      f"{r['totpct']:+.1f}%" if (r["avgc"] and r["totpct"] is not None) else "—"),
+            "Today": ("—" if _is_stale else f"${r['today']:+,.0f}"),
             "Wt": f"{wgt:.0f}%",
             "Signal": {"Buy": "🟢 Buy", "Sell": "🔴 Sell"}.get(r.get("signal"), "⚪ Hold"),
             "Div/yr": div_yr,
@@ -989,11 +1013,15 @@ if mode == "My Portfolio (CSV)":
     if tblp:
         # ---- Total equity headline (updates with the cached price refresh) ----
         _eq1, _eq2, _eq3 = st.columns([2, 1, 1])
-        _eq1.metric("💰 Total equity (holdings, live)", f"${total_val:,.0f}",
-                    f"${win['today']:+,.0f} today")
+        _eq_lbl = ("💰 Total equity (holdings)" if stale_val
+                   else "💰 Total equity (holdings, live)")
+        _eq1.metric(_eq_lbl, f"${total_val:,.0f}",
+                    (f"⚠️ ${stale_val:,.0f} at cost" if stale_val
+                     else f"${win['today']:+,.0f} today"), delta_color="off")
         _eq2.metric("Unrealized P/L", f"${(total_val-total_cost):+,.0f}",
                     f"{((total_val/total_cost-1)*100 if total_cost else 0):+.1f}%")
-        _eq3.metric("Positions", f"{len(tblp)}")
+        _eq3.metric("Positions", f"{len(tblp)}"
+                    + (f" ({len(missing)} stale)" if missing else ""))
         st.dataframe(
             pd.DataFrame(tblp).set_index("Ticker"),
             use_container_width=True,
