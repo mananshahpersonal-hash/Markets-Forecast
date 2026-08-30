@@ -203,7 +203,7 @@ if mode != "My Portfolio (CSV)":
                          key="live_mode", help="Auto-refreshes every 5 minutes while the "
                          "app is open, re-checking prices, news and strong signals.")
     with lc2:
-        check_now = st.button("🚨 Check for strong signals now", use_container_width=True)
+        check_now = st.button("🚨 Check for strong signals now", width='stretch')
     with lc3:
         if live:
             if HAVE_AUTOREFRESH:
@@ -280,7 +280,7 @@ if mode == "Overview (all at once)":
     tickers_str = st.text_input("Stocks to include (comma-separated — edit freely)",
                                 value=default_stocks)
     go = st.button("🔄  Load / refresh overview", type="primary",
-                   use_container_width=True)
+                   width='stretch')
     okey = "OV:" + tickers_str
     if go or st.session_state.get("ov_key") != okey or "overview" not in st.session_state:
         cfg = cf.load_config(str(cf.HERE / "config.yaml"))
@@ -355,7 +355,7 @@ if mode == "Top & Bottom (scan)":
         st.caption(f"Scanning **{len(stocks)} stocks** in {uni_choice} + 4 metals. "
                    f"Bigger lists take longer (~1–3 min) and Yahoo may skip a few — "
                    f"just run it again if so.")
-    go = st.button("🔍  Run market scan", type="primary", use_container_width=True)
+    go = st.button("🔍  Run market scan", type="primary", width='stretch')
     skey = "SCAN:" + uni_id
     if go or st.session_state.get("scan_key") != skey or "scan" not in st.session_state:
         cfg = cf.load_config(str(cf.HERE / "config.yaml"))
@@ -474,7 +474,7 @@ if mode == "Stock Ideas (screens)":
     uni_str = st.text_area("Stocks to screen (comma-separated — edit freely)",
                            value=", ".join(mp.DEFAULT_IDEAS_UNIVERSE), height=90)
     screen = st.radio("Screen", mp.IDEA_SCREENS, horizontal=True)
-    go = st.button("💡  Run screens", type="primary", use_container_width=True)
+    go = st.button("💡  Run screens", type="primary", width='stretch')
     ikey = "IDEAS:" + uni_str
     if go or st.session_state.get("ideas_key") != ikey or "ideas" not in st.session_state:
         cfg = cf.load_config(str(cf.HERE / "config.yaml"))
@@ -656,13 +656,13 @@ if mode == "My Portfolio (CSV)":
                 [{"Ticker": t, "Shares": s, "Avg cost": a} for t, s, a in SEED_HOLDINGS])
     edited = st.data_editor(
         st.session_state["pf_holdings"], num_rows="dynamic",
-        use_container_width=True, key="pf_hold_editor",
+        width='stretch', key="pf_hold_editor",
         column_config={
             "Shares": st.column_config.NumberColumn(format="%.4f"),
             "Avg cost": st.column_config.NumberColumn(format="$%.2f",
                         help="Your average cost per share (from Robinhood). Leave 0 if unknown.")})
     _hc1, _hc2 = st.columns([1, 3])
-    if _hc1.button("💾 Save holdings", use_container_width=True):
+    if _hc1.button("💾 Save holdings", width='stretch'):
         st.session_state["pf_holdings"] = edited
         try:
             mp.STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -822,7 +822,7 @@ if mode == "My Portfolio (CSV)":
                             scale=alt.Scale(zero=False)))
                 _chart = (_base.mark_area(opacity=0.14, color=_col)
                           + _base.mark_line(color=_col, strokeWidth=2))
-                st.altair_chart(_chart.properties(height=230), use_container_width=True)
+                st.altair_chart(_chart.properties(height=230), width='stretch')
             except Exception:
                 st.line_chart(_seg, height=200)
             st.caption("Value of your **current** holdings over the selected range "
@@ -937,13 +937,13 @@ if mode == "My Portfolio (CSV)":
                     unsafe_allow_html=True)
         cW.dataframe(pd.DataFrame(
             [{"Ticker": s.ticker, "Gain": f"+${s.gain:,.0f}"} for s in _win]
-            ).set_index("Ticker"), use_container_width=True, height=min(len(_win)*35+38, 460))
+            ).set_index("Ticker"), width='stretch', height=min(len(_win)*35+38, 460))
         cL.markdown(f"<div style='color:{RED};font-weight:700;'>Losers "
                     f"(−${abs(sum(s.gain for s in _los)):,.0f})</div>",
                     unsafe_allow_html=True)
         cL.dataframe(pd.DataFrame(
             [{"Ticker": s.ticker, "Loss": f"−${abs(s.gain):,.0f}"} for s in _los]
-            ).set_index("Ticker"), use_container_width=True, height=min(len(_los)*35+38, 460))
+            ).set_index("Ticker"), width='stretch', height=min(len(_los)*35+38, 460))
         st.caption(f"Two positions did the damage: **VKTX −$50,802** and "
                    f"**MSTR −$57,293**, both long-term. Everything reconciles to "
                    f"your Robinhood proceeds. Net realized: "
@@ -960,7 +960,7 @@ if mode == "My Portfolio (CSV)":
                          "ST+LT" if (s.st_gain or s.lt_gain) else "—")}
                 for s in pnl.STOCK_SALES]
             st.dataframe(pd.DataFrame(_srows).set_index("Ticker"),
-                         use_container_width=True)
+                         width='stretch')
 
         st.divider()
 
@@ -999,7 +999,7 @@ if mode == "My Portfolio (CSV)":
                         axis=alt.Axis(title=None, labelColor="#9aa")),
                 y=alt.Y("Gold P&L:Q", axis=alt.Axis(title=None, labelColor="#9aa")),
                 color=alt.Color("c:N", scale=None))
-            st.altair_chart(_ch.properties(height=190), use_container_width=True)
+            st.altair_chart(_ch.properties(height=190), width='stretch')
             st.caption("Gold futures realized P&L by month — the January spike, "
                        "then the March and May drawdowns.")
         except Exception:
@@ -1009,7 +1009,7 @@ if mode == "My Portfolio (CSV)":
             _frows = [{"Month": m, "Realized P&L": f"${l.amount:+,.0f}"}
                       for m, l in pnl.FUTURES_MONTHLY.items()]
             st.dataframe(pd.DataFrame(_frows).set_index("Month"),
-                         use_container_width=True)
+                         width='stretch')
             st.caption("Each month = Gross P&L + commissions/fees from the RHD "
                        "statement, reconciled to the cash-balance identity and the "
                        "Purchase-and-Sale rows. August pending (~Sep 1).")
@@ -1034,14 +1034,14 @@ if mode == "My Portfolio (CSV)":
         info = _info.get(r["inst"], {})
         dr = info.get("div_rate")
         _dr_src = "live"
-        if not dr and pnl is not None:                 # live feed blank → fallback
-            dr = pnl.div_per_share(r["inst"])
+        if not dr and pnl is not None and hasattr(pnl, "div_per_share"):
+            dr = pnl.div_per_share(r["inst"])      # verified fallback table
             _dr_src = "est"
         div_yr = (f"${dr*r['shares']:,.0f}/yr" + (" *" if _dr_src == "est" else "")) if dr else "—"
         exd = info.get("ex_date") or "—"
         earn = info.get("earn_date") or "—"
         _is_stale = r.get("stale")
-        ev = pnl.event_for(r["inst"]) if pnl is not None else ""
+        ev = pnl.event_for(r["inst"]) if (pnl is not None and hasattr(pnl,"event_for")) else ""
         tblp.append({
             "Ticker": r["inst"],
             "Shares": f"{r['shares']:g}",
@@ -1081,7 +1081,7 @@ if mode == "My Portfolio (CSV)":
                           "prices (see the app's SECRETS note)."))
         st.dataframe(
             pd.DataFrame(tblp).set_index("Ticker"),
-            use_container_width=True,
+            width='stretch',
             column_config={
                 "Signal": st.column_config.TextColumn(width="small"),
                 "Coming up": st.column_config.TextColumn(width="medium"),
@@ -1117,7 +1117,7 @@ if mode == "My Portfolio (CSV)":
         if sym_cls.get(inst) != "Stocks & ETFs":
             continue
         rate = (_info.get(inst) or {}).get("div_rate")   # from 12h cache, no new call
-        if not rate and pnl is not None:
+        if not rate and pnl is not None and hasattr(pnl, "div_per_share"):
             rate = pnl.div_per_share(inst)               # verified fallback
             if rate:
                 _proj_est = True
@@ -1213,7 +1213,7 @@ else:
                 _cc = st.columns(min(4, len(_sug)))
                 for _i, (_stk, _snm) in enumerate(_sug):
                     if _cc[_i % len(_cc)].button(f"{_stk} · {_snm}", key=f"tsg_{_stk}",
-                                                 use_container_width=True):
+                                                 width='stretch'):
                         st.session_state["stock_typed"] = _stk
                         st.rerun()
                 st.caption(f"(Or continuing with **{picked}** from the dropdown.)")
@@ -1269,7 +1269,7 @@ with c3:
         format_func=lambda k: "(none)" if k == "(none)" else scen_map[k]["label"])
 use_lgbm = st.checkbox("Use LightGBM (M5-winning method, if installed)", value=True)
 
-run = st.button("🔄  Update prediction now", type="primary", use_container_width=True)
+run = st.button("🔄  Update prediction now", type="primary", width='stretch')
 
 _res_ts = st.session_state.get("result_ts", 0)
 _stale = live and (time.time() - _res_ts) > REFRESH_MIN * 60
@@ -1819,7 +1819,7 @@ for i, nm in enumerate(order):
     histser = res["hourly"] if (freq == "hourly" and res["have_hourly"]) else res["daily"]
     fig = mp.fan_chart(hf, histser, spot, unit=unit,
                        hist_points=48 if freq == "hourly" else 55)
-    rows3[i // 2][i % 2].pyplot(fig, use_container_width=True)
+    rows3[i // 2][i % 2].pyplot(fig, width='stretch')
 st.caption("Green = the model leans up over that window, coral = down. Shaded "
            "bands are the likely range (darker 68%, lighter 95%). Dotted line = "
            "price now. End label = central estimate and % move.")
