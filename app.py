@@ -11,6 +11,51 @@ import os
 import sys
 import time
 import logging
+
+# === CRITICAL: Python 3.14 dataclass fix, applied BEFORE any project import ===
+# Streamlit Cloud currently forces Python 3.14 (its runtime.txt pin is broken,
+# a known platform bug), and 3.14 has a dataclass regression that raises KeyError
+# / AttributeError while a module is mid-import (crashing on 'storage',
+# 'indicators', etc.). We patch dataclasses.dataclass GLOBALLY here so every
+# @dataclass in every module — ours and any we import — uses a version that
+# ensures the class's module is registered in sys.modules before processing, and
+# falls back to a hand-built __init__ if it still fails. This must run first.
+import dataclasses as _dc
+_real_dataclass = _dc.dataclass
+
+
+def _safe_dataclass(cls=None, **kw):
+    def _wrap(c):
+        mod = getattr(c, "__module__", None)
+        # Ensure the module object exists in sys.modules (the 3.14 bug is a
+        # lookup of sys.modules[module].__dict__ returning None mid-import). We
+        # only ADD a missing entry; we never overwrite a real one.
+        if mod and mod not in sys.modules:
+            import types as _t
+            sys.modules[mod] = _t.ModuleType(mod)
+        try:
+            return _real_dataclass(c, **kw)
+        except Exception:
+            ann = getattr(c, "__annotations__", {})
+            names = list(ann)
+            defaults = {n: getattr(c, n) for n in names if hasattr(c, n)}
+
+            def __init__(self, *a, **k):
+                for i, v in enumerate(a):
+                    if i < len(names):
+                        setattr(self, names[i], v)
+                for n in names:
+                    if not hasattr(self, n):
+                        setattr(self, n, k.get(n, defaults.get(n)))
+                for n, v in k.items():
+                    setattr(self, n, v)
+            c.__init__ = __init__
+            return c
+    return _wrap if cls is None else _wrap(cls)
+
+
+_dc.dataclass = _safe_dataclass          # patch globally, before project imports
+
 import pandas as pd
 import streamlit as st
 
@@ -19,6 +64,10 @@ import streamlit as st
 # guessing from screenshots. Look for lines tagged [MH] in the log panel. ---
 logging.basicConfig(level=logging.INFO)
 _log = logging.getLogger("market_helper")
+# Yahoo's endpoint is dead (401 Invalid Crumb) and we deliberately fall back to
+# Finnhub, so yfinance spews harmless 401 ERRORs. Silence them so the log panel
+# shows only real problems and our [MH] diagnostics.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 _log.info(f"[MH] starting — Python {sys.version.split()[0]}")
 print(f"[MH] starting — Python {sys.version.split()[0]}", flush=True)
 
