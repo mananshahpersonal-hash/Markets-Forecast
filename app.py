@@ -1495,29 +1495,62 @@ if mode == "My Portfolio (CSV)":
                        help="Applies if income > ~$200k single / $250k joint")
     ilr = t4.number_input("IL rate %", value=4.95, step=0.05) / 100
     qual = st.checkbox("Treat dividends as qualified (long-term rate)", value=True)
-    _st = float(rz.loc[rz.term == "ST", "gain"].sum()) if not rz.empty else 0.0
-    _lt = float(rz.loc[rz.term == "LT", "gain"].sum()) if not rz.empty else 0.0
-    _fut = sum(p.get("net_cash", 0.0) for p in pos.values()
-               if p["class"] in ("Futures", "Options"))
-    st.caption(_md(f"From your file: short-term realized **${_st:+,.0f}** · long-term "
-               f"realized **${_lt:+,.0f}** · futures/options net **${_fut:+,.0f}** · "
-               f"dividends YTD **${dv_sums['ytd']:,.0f}**. (Futures have special "
-               f"60/40 tax treatment — ask a CPA; not estimated below.)"))
-    tax = pfm.tax_estimate(_st, _lt, dv_sums["ytd"], fed, ltr, niit, ilr, qual)
-    e1, e2 = st.columns(2)
+
+    # Use the FULL, correct realized figures (all 17 sales with cost basis),
+    # which net the VKTX/MSTR losses against the winners — not just the CSV's
+    # partial data. This is what makes the tax honest.
+    if pnl is not None and hasattr(pnl, "STOCK_ST"):
+        _st = float(pnl.STOCK_ST)          # net short-term (incl. losses)
+        _lt = float(pnl.STOCK_LT)          # net long-term  (incl. losses)
+    else:
+        _st = float(rz.loc[rz.term == "ST", "gain"].sum()) if not rz.empty else 0.0
+        _lt = float(rz.loc[rz.term == "LT", "gain"].sum()) if not rz.empty else 0.0
+    _div_ytd = dv_sums["ytd"] if P is not None else 43357.0
+    tax = pfm.tax_estimate(_st, _lt, _div_ytd, fed, ltr, niit, ilr, qual)
+
+    # Headline: show the net capital position honestly.
+    if tax.get("capital_is_loss"):
+        st.success(
+            f"📉 Your realized stock trades net to a **loss of "
+            f"${abs(tax['net_capital']):,.0f}** (short-term ${_st:+,.0f} + long-term "
+            f"${_lt:+,.0f}). A net capital loss means **$0 capital-gains tax** — and "
+            f"you can deduct up to **${tax['deductible_loss']:,.0f}** against ordinary "
+            f"income this year, carrying the rest forward to offset future gains. "
+            f"Only your **dividends** are taxable.")
+    else:
+        st.info(f"Net realized capital **gain ${tax['net_capital']:,.0f}** "
+                f"(ST ${_st:+,.0f} + LT ${_lt:+,.0f}) plus dividends "
+                f"${_div_ytd:,.0f} are taxable.")
+
+    _rows = [
+        ("Federal — short-term gains", tax["fed_st"]),
+        ("Federal — long-term gains", tax["fed_lt"]),
+        ("Federal — dividends", tax["fed_div"]),
+    ]
+    if niit:
+        _rows.append(("NIIT (3.8%)", tax["fed_niit"]))
+    _rows.append(("Illinois (flat 4.95%)", tax["il"]))
+    _tax_df = pd.DataFrame(
+        [{"Line": n, "Estimated tax": round(v, 2)} for n, v in _rows])
+    e1, e2 = st.columns([3, 2])
     with e1:
-        st.markdown(_md("**Estimated tax on YTD realized gains + dividends:**  \n"
-                    f"Federal short-term: **${tax['fed_st']:,.0f}**  \n"
-                    f"Federal long-term: **${tax['fed_lt']:,.0f}**  \n"
-                    f"Federal on dividends: **${tax['fed_div']:,.0f}**  \n"
-                    + (f"NIIT: **${tax['fed_niit']:,.0f}**  \n" if niit else "")
-                    + f"Illinois (flat): **${tax['il']:,.0f}**  \n"
-                    f"**Total ≈ ${tax['total']:,.0f}**"))
+        st.dataframe(
+            _tax_df.set_index("Line"), width='stretch',
+            column_config={"Estimated tax":
+                           st.column_config.NumberColumn(format="$%.0f")})
+        st.markdown(_md(f"**Total estimated tax ≈ ${tax['total']:,.0f}**"))
     with e2:
         days = max((now - _dt.datetime(now.year, 1, 1)).days, 1)
-        st.markdown("**Year-end projection (same pace):**  \n"
-                    f"≈ **${tax['total']*365/days:,.0f}** for the full year.")
-        st.caption("Straight-line projection — real life won't be straight-line.")
+        st.metric("Year-end projection (same pace)",
+                  f"${tax['total']*365/days:,.0f}")
+        st.caption("Straight-line from your YTD pace — real life won't be "
+                   "straight-line, and dividends are the main driver here since "
+                   "your capital gains net to a loss.")
+
+    st.caption(_md(f"Based on: net short-term **${_st:+,.0f}**, net long-term "
+               f"**${_lt:+,.0f}** (all 17 sales, losses included), dividends YTD "
+               f"**${_div_ytd:,.0f}**. Futures have special 60/40 tax treatment — "
+               f"not modeled here; ask a CPA."))
     st.error("**Estimates only.** Your real bill depends on your salary, filing "
              "status, deductions, wash sales, and futures' special rules — none of "
              "which are in a brokerage CSV. Use this for planning; use a CPA for "

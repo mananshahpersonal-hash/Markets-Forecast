@@ -241,18 +241,41 @@ def market_windows(closes: pd.Series, now: dt.datetime) -> dict:
 def tax_estimate(st_gain: float, lt_gain: float, div_income: float,
                  fed_marginal: float, ltcg: float, niit: bool,
                  il_rate: float = 0.0495, dividends_qualified: bool = True) -> dict:
-    """Transparent ESTIMATE. IL taxes everything at the flat rate (no LT break);
-    federal: ST at marginal, LT at 0/15/20, dividends at LTCG if qualified else
-    marginal; NIIT adds 3.8% on investment income if enabled."""
-    st_pos, lt_pos, dv = max(st_gain, 0), max(lt_gain, 0), max(div_income, 0)
-    net_offset = min(0.0, st_gain) + min(0.0, lt_gain)   # losses offset gains
-    taxable_st = max(st_pos + min(net_offset, 0) if lt_pos == 0 else st_pos, 0)
-    fed_st = st_pos * fed_marginal
-    fed_lt = lt_pos * ltcg
+    """Transparent ESTIMATE that correctly NETS capital gains against losses per
+    IRS rules:
+      1. Net short-term (gains minus losses) → net_st
+      2. Net long-term  (gains minus losses) → net_lt
+      3. If one bucket is positive and the other negative, they offset.
+      4. A net capital LOSS → $0 capital-gains tax (you'd deduct up to $3k
+         against ordinary income and carry the rest forward — not modeled here).
+      5. Dividends are taxable regardless of capital losses.
+    st_gain / lt_gain are the NET figures for each bucket (may be negative)."""
+    dv = max(div_income, 0.0)
+
+    # Cross-offset ST and LT if they have opposite signs (IRS allows this).
+    net_st, net_lt = st_gain, lt_gain
+    if (net_st > 0) and (net_lt < 0):
+        applied = min(net_st, -net_lt)
+        net_st -= applied; net_lt += applied
+    elif (net_lt > 0) and (net_st < 0):
+        applied = min(net_lt, -net_st)
+        net_lt -= applied; net_st += applied
+
+    # Only positive remaining gains are taxed; negatives → $0 (loss carryforward).
+    taxable_st = max(net_st, 0.0)
+    taxable_lt = max(net_lt, 0.0)
+    net_capital = net_st + net_lt            # overall capital position
+
+    fed_st = taxable_st * fed_marginal
+    fed_lt = taxable_lt * ltcg
     fed_dv = dv * (ltcg if dividends_qualified else fed_marginal)
-    fed_niit = (st_pos + lt_pos + dv) * (0.038 if niit else 0.0)
-    il = (st_pos + lt_pos + dv) * il_rate
+    # NIIT applies to net investment income (gains + dividends), floored at 0.
+    fed_niit = max(taxable_st + taxable_lt + dv, 0.0) * (0.038 if niit else 0.0)
+    # Illinois flat rate on net capital GAIN (not loss) + dividends.
+    il = (max(net_capital, 0.0) + dv) * il_rate
     total = fed_st + fed_lt + fed_dv + fed_niit + il
     return {"fed_st": fed_st, "fed_lt": fed_lt, "fed_div": fed_dv,
             "fed_niit": fed_niit, "il": il, "total": total,
-            "note_losses": net_offset}
+            "net_capital": net_capital,
+            "capital_is_loss": net_capital < 0,
+            "deductible_loss": min(max(-net_capital, 0.0), 3000.0) if net_capital < 0 else 0.0}
