@@ -1506,28 +1506,35 @@ if mode == "My Portfolio (CSV)":
     _div_ytd = dv_sums["ytd"] if P is not None else 43357.0
     tax = pfm.tax_estimate(_st, _lt, _div_ytd, fed, ltr, niit, ilr, qual)
 
+    # Compute net capital locally so this NEVER depends on a specific key being
+    # present in the tax dict (guards against a stale portfolio.py after a
+    # partial upload). All reads below use .get() with safe fallbacks.
+    _net_cap = _st + _lt
+    _is_loss = _net_cap < 0
+    _deductible = min(-_net_cap, 3000.0) if _is_loss else 0.0
+
     # Headline: show the net capital position honestly.
-    if tax.get("capital_is_loss"):
+    if _is_loss:
         st.success(
             f"📉 Your realized stock trades net to a **loss of "
-            f"${abs(tax['net_capital']):,.0f}** (short-term ${_st:+,.0f} + long-term "
+            f"${abs(_net_cap):,.0f}** (short-term ${_st:+,.0f} + long-term "
             f"${_lt:+,.0f}). A net capital loss means **$0 capital-gains tax** — and "
-            f"you can deduct up to **${tax['deductible_loss']:,.0f}** against ordinary "
+            f"you can deduct up to **${_deductible:,.0f}** against ordinary "
             f"income this year, carrying the rest forward to offset future gains. "
             f"Only your **dividends** are taxable.")
     else:
-        st.info(f"Net realized capital **gain ${tax['net_capital']:,.0f}** "
+        st.info(f"Net realized capital **gain ${_net_cap:,.0f}** "
                 f"(ST ${_st:+,.0f} + LT ${_lt:+,.0f}) plus dividends "
                 f"${_div_ytd:,.0f} are taxable.")
 
     _rows = [
-        ("Federal — short-term gains", tax["fed_st"]),
-        ("Federal — long-term gains", tax["fed_lt"]),
-        ("Federal — dividends", tax["fed_div"]),
+        ("Federal — short-term gains", tax.get("fed_st", 0.0)),
+        ("Federal — long-term gains", tax.get("fed_lt", 0.0)),
+        ("Federal — dividends", tax.get("fed_div", 0.0)),
     ]
     if niit:
-        _rows.append(("NIIT (3.8%)", tax["fed_niit"]))
-    _rows.append(("Illinois (flat 4.95%)", tax["il"]))
+        _rows.append(("NIIT (3.8%)", tax.get("fed_niit", 0.0)))
+    _rows.append(("Illinois (flat 4.95%)", tax.get("il", 0.0)))
     _tax_df = pd.DataFrame(
         [{"Line": n, "Estimated tax": round(v, 2)} for n, v in _rows])
     e1, e2 = st.columns([3, 2])
@@ -1536,11 +1543,11 @@ if mode == "My Portfolio (CSV)":
             _tax_df.set_index("Line"), width='stretch',
             column_config={"Estimated tax":
                            st.column_config.NumberColumn(format="$%.0f")})
-        st.markdown(_md(f"**Total estimated tax ≈ ${tax['total']:,.0f}**"))
+        st.markdown(_md(f"**Total estimated tax ≈ ${tax.get('total', 0.0):,.0f}**"))
     with e2:
         days = max((now - _dt.datetime(now.year, 1, 1)).days, 1)
         st.metric("Year-end projection (same pace)",
-                  f"${tax['total']*365/days:,.0f}")
+                  f"${tax.get('total', 0.0)*365/days:,.0f}")
         st.caption("Straight-line from your YTD pace — real life won't be "
                    "straight-line, and dividends are the main driver here since "
                    "your capital gains net to a loss.")
