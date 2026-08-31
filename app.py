@@ -1120,36 +1120,34 @@ if mode == "My Portfolio (CSV)":
           st.markdown("#### What drove it")
           _drivers = sorted(pnl.summary_lines(), key=lambda l: -abs(l.amount))
           _mx = max(abs(l.amount) for l in _drivers) or 1
-          _bar_html = ['<div style="display:flex;flex-direction:column;gap:9px;'
-                       'margin:4px 0 6px 0;">']
+          _rowsH = ['<div style="display:flex;flex-direction:column;gap:10px;'
+                    'margin:8px 0 6px 0;">']
           for l in _drivers:
               up = l.amount >= 0
               col = GRN if up else RED
-              frac = abs(l.amount) / _mx
-              w = max(frac * 46, 1.5)          # up to 46% of row width each side
+              sign = "+" if up else "−"
+              barw = max(abs(l.amount) / _mx * 100, 2)
               approx = " ≈" if l.basis != "exact" else ""
-              left = f'<div style="flex:0 0 46%;text-align:right;padding-right:8px;">' \
-                     + (f'<span style="display:inline-block;height:18px;width:{w}%;'
-                        f'background:{RED};border-radius:3px 0 0 3px;vertical-align:middle;">'
-                        f'</span>' if not up else '') + '</div>'
-              right = f'<div style="flex:0 0 46%;padding-left:8px;">' \
-                      + (f'<span style="display:inline-block;height:18px;width:{w}%;'
-                         f'background:{GRN};border-radius:0 3px 3px 0;vertical-align:middle;">'
-                         f'</span>' if up else '') + '</div>'
-              _bar_html.append(
-                  f'<div style="display:flex;align-items:center;font-size:13.5px;">'
-                  f'{left}{right}</div>'
-                  f'<div style="display:flex;font-size:12.5px;color:#6b6a66;'
-                  f'margin-top:-6px;">'
-                  f'<div style="flex:0 0 46%;text-align:right;padding-right:8px;">'
-                  f'{l.label}{approx}</div>'
-                  f'<div style="flex:0 0 8%;text-align:center;color:{col};'
-                  f'font-weight:700;">${l.amount:+,.0f}</div>'
-                  f'<div style="flex:0 0 46%;"></div></div>')
-          _bar_html.append('</div>')
-          _html("".join(_bar_html))
-          st.caption("Green = added to your year · red = took away. Longest bar = "
-                     "biggest swing. “≈” means an approximate line (see note below).")
+              # One clean row: label (left) · bar (middle, fixed track) · amount (right).
+              _rowsH.append(
+                  f'<div style="display:flex;align-items:center;gap:12px;">'
+                  # label
+                  f'<div style="flex:0 0 230px;text-align:right;font-size:13px;'
+                  f'color:#cfcfca;">{l.label}{approx}</div>'
+                  # bar track
+                  f'<div style="flex:1 1 auto;background:#1c1c22;border-radius:5px;'
+                  f'height:20px;position:relative;overflow:hidden;">'
+                  f'<div style="width:{barw}%;height:100%;background:{col};'
+                  f'border-radius:5px;"></div></div>'
+                  # amount
+                  f'<div style="flex:0 0 96px;text-align:right;font-weight:700;'
+                  f'font-size:13.5px;color:{col};">{sign}${abs(l.amount):,.0f}</div>'
+                  f'</div>')
+          _rowsH.append('</div>')
+          _html("".join(_rowsH))
+          st.caption("Sorted by size of impact. **Green** added to your year, "
+                     "**red** took away; bar length shows how big each was. "
+                     "“≈” marks an approximate line (see note below).")
 
           # ---- the statement, as clean metrics not a monospace dump ----
           st.markdown("#### The lines")

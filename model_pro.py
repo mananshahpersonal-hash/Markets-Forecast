@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v59 · 2026-08-30 · FIX tax: net capital losses against gains (VKTX/MSTR) → $0 cap-gains tax, cleaner tax UX"
+BUILD = "v60 · 2026-08-30 · cleaner 'What drove it' chart: single-line label/bar/amount rows, left-aligned"
 
 warnings.filterwarnings("ignore")
 
