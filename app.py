@@ -1632,11 +1632,25 @@ if simple:
 
     tf_map = {"Next few hours": "4 hours", "Tomorrow": "Next day",
               "Next week": "Next week"}
-    tf = st.radio("Look ahead:", list(tf_map.keys()), index=1, horizontal=True)
-    plan = res.get("plans", {}).get(tf_map[tf])
+    tf = st.radio("Look ahead:", list(tf_map.keys()), index=1, horizontal=True,
+                  key=f"tf_simple_{asset_key}")   # unique key per asset
+    _plans = res.get("plans", {})
+    plan = _plans.get(tf_map[tf])
+    _horizon_missing = plan is None
+    if _horizon_missing:
+        _have = [k for k in ("4 hours", "Next day", "Next week") if k in _plans]
+        _havenames = [n for n, v in tf_map.items() if v in _have]
+        st.info(f"⏳ No forecast for **{tf}** on {name} right now — not enough "
+                f"recent "
+                f"{'intraday ' if tf_map[tf] in ('4 hours', 'Next day') else ''}"
+                f"data to make an honest call at this horizon."
+                + (f" Try: **{', '.join(_havenames)}**."
+                   if _havenames else " Try again after the next refresh."))
 
     # ---- 1) the call, in one clear line ----
-    if not plan or plan.get("direction") == "WAIT":
+    if _horizon_missing:
+        pass                                    # message already shown above
+    elif not plan or plan.get("direction") == "WAIT":
         st.markdown("## 🤷 NOT SURE which way this goes")
         st.markdown("The signals don't agree enough to lean either way. When it's "
                     "unclear like this, the smart move is usually to **wait**.")

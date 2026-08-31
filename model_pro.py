@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v55 · 2026-08-30 · frequency-accurate dividend forecasts (weekly/monthly/quarterly calendars) + numeric column sorting"
+BUILD = "v56 · 2026-08-30 · fix copper horizon radio (unique key + clear message when thin hourly data blocks a horizon)"
 
 warnings.filterwarnings("ignore")
 
