@@ -214,13 +214,18 @@ def source_selftest(sample: str = "AAPL", etf: str = "QDTE"):
     instead of guessing — because a stock like AAPL and an ETF like QDTE exercise
     both coverage cases."""
     out = []
-    try:
-        _c = finnhub_candles("CPER", days=90)
-        out.append(("Finnhub history (CPER candles)", _c is not None, False,
-                    f"{len(_c)} daily closes, last=${float(_c.iloc[-1]):.2f}"
-                    if _c is not None else "denied / no data (candles may need paid tier)"))
-    except Exception as _ex:
-        out.append(("Finnhub history (CPER candles)", False, False, f"error: {str(_ex)[:40]}"))
+    for _pname, _pkey, _pfn in HISTORY_PROVIDERS:
+        try:
+            if _pkey and not _secret(_pkey):
+                out.append((f"{_pname} (history)", False, False,
+                            f"no key set — add {_pkey} in Secrets to enable"))
+                continue
+            _c = _pfn("CPER")
+            out.append((f"{_pname} (history)", _c is not None, False,
+                        f"{len(_c)} daily closes, last=${float(_c.iloc[-1]):.2f}"
+                        if _c is not None else "denied / no data"))
+        except Exception as _ex:
+            out.append((f"{_pname} (history)", False, False, f"error: {str(_ex)[:40]}"))
     for name, fn in (("stockprices.dev", stockpricesdev_quote),
                      ("Stooq", stooq_quote),
                      ("Finnhub", finnhub_quote)):
@@ -287,16 +292,120 @@ def finnhub_candles(symbol: str, days: int = 730, resolution: str = "D"):
 
 
 def daily_history(ticker: str):
-    """(series, note) — Finnhub-candle daily history for a ticker, using the ETF
-    proxy for futures symbols. note explains what was used; (None, reason) on
-    failure."""
+    """(series, note) — daily history for a ticker via the provider chain, using
+    the ETF proxy for futures symbols. On failure returns (None, status) where
+    status says exactly what each provider did (denied vs no key), so the error
+    the user sees names the fix instead of shrugging."""
     proxy, label = HIST_PROXY.get(ticker, (None, None))
     sym = proxy or ticker.replace("=F", "").replace("-", ".")
-    s = finnhub_candles(sym)
-    if s is None:
-        return None, f"Finnhub candles unavailable for {sym}"
-    note = (f"Finnhub daily history via {proxy} ({label}) — futures feed is "
-            f"down, so price LEVELS are the ETF's; every % move, signal and "
-            f"forecast mirrors the metal." if proxy else
-            f"Finnhub daily history ({sym})")
-    return s, note
+    statuses = []
+    for name, keyname, fn in HISTORY_PROVIDERS:
+        if keyname and not _secret(keyname):
+            statuses.append(f"{name}: no key (add {keyname} in Secrets)")
+            continue
+        try:
+            s = fn(sym)
+        except Exception:
+            s = None
+        if s is not None:
+            src = f"{name} daily history"
+            note = (f"{src} via {proxy} ({label}) — futures feed is down, so "
+                    f"price LEVELS are the ETF's; every % move, signal and "
+                    f"forecast mirrors the metal." if proxy else f"{src} ({sym})")
+            return s, note
+        statuses.append(f"{name}: denied/no data")
+    return None, " · ".join(statuses)
+
+
+# ---------------------------------------------------------------------------
+# EOD HISTORY PROVIDERS (key-authed — the kind that works from server IPs)
+# ---------------------------------------------------------------------------
+# Finnhub's free tier gates /stock/candle (quotes free, candles paid — confirmed
+# by the in-app diagnostic), so daily history comes from a chain of free EOD
+# APIs. Each is only tried if its key exists in Secrets. Tiingo first: cleanest
+# free EOD, generous limits (~1000 req/day), covers CPER/GLD/SLV and stocks.
+def _secret(name: str) -> str | None:
+    try:
+        import streamlit as st
+        k = st.secrets.get(name)  # type: ignore[attr-defined]
+        if k:
+            return str(k).strip()
+    except Exception:
+        pass
+    k = os.environ.get(name)
+    return k.strip() if k else None
+
+
+def _http_json(url: str, timeout: float = 10.0):
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "market-helper/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def tiingo_daily(symbol: str):
+    """Tiingo EOD closes (needs TIINGO_KEY). ~2y of daily adj closes or None."""
+    k = _secret("TIINGO_KEY")
+    if not k:
+        return None
+    try:
+        import pandas as pd, datetime as _dt
+        start = (_dt.date.today() - _dt.timedelta(days=760)).isoformat()
+        d = _http_json(f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
+                       f"?startDate={start}&token={k}")
+        if not isinstance(d, list) or not d:
+            return None
+        idx = pd.to_datetime([r["date"][:10] for r in d])
+        vals = [float(r.get("adjClose") or r.get("close")) for r in d]
+        s = pd.Series(vals, index=idx).sort_index()
+        return s if len(s) >= 60 else None
+    except Exception:
+        return None
+
+
+def twelvedata_daily(symbol: str):
+    """Twelve Data EOD closes (needs TWELVEDATA_KEY) or None."""
+    k = _secret("TWELVEDATA_KEY")
+    if not k:
+        return None
+    try:
+        import pandas as pd
+        d = _http_json(f"https://api.twelvedata.com/time_series?symbol={symbol}"
+                       f"&interval=1day&outputsize=750&apikey={k}")
+        vals = (d or {}).get("values")
+        if not vals:
+            return None
+        idx = pd.to_datetime([r["datetime"] for r in vals])
+        s = pd.Series([float(r["close"]) for r in vals], index=idx).sort_index()
+        return s if len(s) >= 60 else None
+    except Exception:
+        return None
+
+
+def alphavantage_daily(symbol: str):
+    """Alpha Vantage EOD closes (needs ALPHAVANTAGE_KEY; 25 req/day cap) or None."""
+    k = _secret("ALPHAVANTAGE_KEY")
+    if not k:
+        return None
+    try:
+        import pandas as pd
+        d = _http_json(f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY"
+                       f"&symbol={symbol}&outputsize=full&apikey={k}")
+        ts = (d or {}).get("Time Series (Daily)")
+        if not ts:
+            return None
+        idx = pd.to_datetime(list(ts.keys()))
+        s = pd.Series([float(v["4. close"]) for v in ts.values()], index=idx).sort_index()
+        return s.tail(760) if len(s) >= 60 else None
+    except Exception:
+        return None
+
+
+HISTORY_PROVIDERS = [
+    ("Finnhub candles", None, finnhub_candles),        # key already present
+    ("Tiingo", "TIINGO_KEY", tiingo_daily),
+    ("Twelve Data", "TWELVEDATA_KEY", twelvedata_daily),
+    ("Alpha Vantage", "ALPHAVANTAGE_KEY", alphavantage_daily),
+]

@@ -266,16 +266,20 @@ def fetch_prices(ticker: str) -> tuple[pd.Series, pd.Series]:
             _s, _note = _dfeed.daily_history(ticker)
         except Exception:
             _s, _note = None, "history fallback unavailable"
+        if _s is None and _note:
+            _fail_note = _note
         if _s is not None:
             d = _s
             LAST_HISTORY_NOTE = _note
             print(f"[MH] history fallback for {ticker}: {len(d)} closes — {_note}",
                   flush=True)
     if d.empty:
+        _fn = locals().get("_fail_note", "")
         raise RuntimeError(
-            f"No daily data for {ticker} from Yahoo OR the Finnhub fallback. "
-            f"Open '🔬 Diagnose price feeds' in My Portfolio to see which "
-            f"sources work from this server.")
+            f"No daily data for {ticker} — Yahoo is dead and every fallback "
+            f"came back empty. Provider status: [{_fn}]. The fastest fix: "
+            f"free Tiingo key → add TIINGO_KEY in Settings → Secrets, reboot. "
+            f"'🔬 Diagnose price feeds' in My Portfolio tests each source live.")
     return d, h
 
 

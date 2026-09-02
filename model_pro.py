@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v67 · 2026-09-02 · metals history restored via Finnhub candles (ETF proxies, labeled) after Yahoo died fully"
+BUILD = "v68 · 2026-09-02 · history provider chain (Tiingo/TwelveData/AlphaVantage) + errors that name their fix"
 
 warnings.filterwarnings("ignore")
 
