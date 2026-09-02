@@ -214,6 +214,13 @@ def source_selftest(sample: str = "AAPL", etf: str = "QDTE"):
     instead of guessing — because a stock like AAPL and an ETF like QDTE exercise
     both coverage cases."""
     out = []
+    try:
+        _c = finnhub_candles("CPER", days=90)
+        out.append(("Finnhub history (CPER candles)", _c is not None, False,
+                    f"{len(_c)} daily closes, last=${float(_c.iloc[-1]):.2f}"
+                    if _c is not None else "denied / no data (candles may need paid tier)"))
+    except Exception as _ex:
+        out.append(("Finnhub history (CPER candles)", False, False, f"error: {str(_ex)[:40]}"))
     for name, fn in (("stockprices.dev", stockpricesdev_quote),
                      ("Stooq", stooq_quote),
                      ("Finnhub", finnhub_quote)):
@@ -241,3 +248,55 @@ def source_selftest(sample: str = "AAPL", etf: str = "QDTE"):
 def source_label() -> str:
     """Human tag for which feeds are active."""
     return "multi-source" if have_finnhub() else "keyless (Stooq/stockprices)"
+
+
+# ---------------------------------------------------------------------------
+# DAILY HISTORY via Finnhub candles — the Yahoo-replacement for the forecaster
+# ---------------------------------------------------------------------------
+# Yahoo's chart API is dead from server IPs (401 Invalid Crumb), which starved
+# the metals forecaster of history. Finnhub is the one source PROVEN reachable
+# from the deploy environment (in-app diagnostic), so history now comes from
+# /stock/candle. Futures symbols aren't on the free tier, so metals use liquid
+# ETF proxies whose daily RETURNS track the futures closely; the UI labels this.
+HIST_PROXY = {"HG=F": ("CPER", "US Copper Index ETF"),
+              "GC=F": ("GLD", "SPDR Gold Shares ETF"),
+              "SI=F": ("SLV", "iShares Silver ETF"),
+              "PL=F": ("PPLT", "abrdn Platinum ETF"),
+              "PA=F": ("PALL", "abrdn Palladium ETF")}
+
+
+def finnhub_candles(symbol: str, days: int = 730, resolution: str = "D"):
+    """Daily close series from Finnhub /stock/candle, or None. Response format:
+    {"s":"ok","t":[epochs],"c":[closes],...}; s="no_data" or an error → None."""
+    try:
+        import pandas as pd
+    except Exception:
+        return None
+    now = int(time.time())
+    d = _get("/stock/candle", {"symbol": symbol, "resolution": resolution,
+                               "from": now - days * 86400, "to": now},
+             timeout=10.0)
+    if not d or d.get("s") != "ok" or not d.get("c"):
+        return None
+    try:
+        s = pd.Series(d["c"], index=pd.to_datetime(d["t"], unit="s"))
+        s = s[~s.index.duplicated(keep="last")].sort_index()
+        return s if len(s) >= 60 else None
+    except Exception:
+        return None
+
+
+def daily_history(ticker: str):
+    """(series, note) — Finnhub-candle daily history for a ticker, using the ETF
+    proxy for futures symbols. note explains what was used; (None, reason) on
+    failure."""
+    proxy, label = HIST_PROXY.get(ticker, (None, None))
+    sym = proxy or ticker.replace("=F", "").replace("-", ".")
+    s = finnhub_candles(sym)
+    if s is None:
+        return None, f"Finnhub candles unavailable for {sym}"
+    note = (f"Finnhub daily history via {proxy} ({label}) — futures feed is "
+            f"down, so price LEVELS are the ETF's; every % move, signal and "
+            f"forecast mirrors the metal." if proxy else
+            f"Finnhub daily history ({sym})")
+    return s, note

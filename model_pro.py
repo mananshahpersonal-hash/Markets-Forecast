@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v66 · 2026-09-01 · learned event impacts from price history + ⚡ upcoming-events panel + 🚨 big-swing watch"
+BUILD = "v67 · 2026-09-02 · metals history restored via Finnhub candles (ETF proxies, labeled) after Yahoo died fully"
 
 warnings.filterwarnings("ignore")
 
@@ -1410,6 +1410,10 @@ def quick_read(cfg: dict, asset_key: str = None,
         df = cf.yf.download(profile["ticker"], period="2y", interval="1d",
                             auto_adjust=False, progress=False)
         daily = cf._close_series(df)
+        if daily is None or daily.empty:
+            import datafeed as _dfeed
+            daily, _ = _dfeed.daily_history(profile["ticker"])
+            daily = daily if daily is not None else cf.pd.Series(dtype=float)
     except Exception:
         return {**base, "error": "no data"}
     if daily is None or len(daily) < 60:
@@ -2098,6 +2102,7 @@ def run_prediction(cfg: dict, asset_key: str = "copper",
         "ref_beta": ref_beta, "ref_label": profile["ref_label"],
         "daily": daily, "hourly": hourly if have_hourly else daily,
         "have_hourly": have_hourly, "ref_loaded": not ref.empty,
+        "history_note": getattr(cf, "LAST_HISTORY_NOTE", ""),
         "news": news, "news_coverage": news_coverage,
         "news_unscored": _unscored[:3], "upcoming_events": _upc,
         "scenario": scenario, "combined_score": combined_score,

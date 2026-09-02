@@ -234,18 +234,48 @@ def _dl_retry(ticker, tries=4, **kw):
     return pd.DataFrame()
 
 
+LAST_HISTORY_NOTE = ""      # set when a fallback/proxy source supplied history
+
+
 def fetch_prices(ticker: str) -> tuple[pd.Series, pd.Series]:
-    """Return (daily_close_10y, hourly_close_60d). Raises if yfinance missing."""
-    if yf is None:
-        raise RuntimeError("yfinance not installed. `pip install yfinance`.")
-    daily = _dl_retry(ticker, period="10y", interval="1d",
-                      auto_adjust=False, progress=False)
-    hourly = _dl_retry(ticker, period="60d", interval="60m",
-                       auto_adjust=False, progress=False)
-    d = _close_series(daily)
-    h = _close_series(hourly)
+    """Return (daily_close, hourly_close_60d). Yahoo first; when it returns
+    nothing (its chart API is dead from server IPs), fall back to Finnhub daily
+    candles — via a tracking-ETF proxy for futures symbols. Hourly stays
+    best-effort: with no intraday feed the short horizons show their honest
+    'not enough data' message instead of failing the whole asset."""
+    global LAST_HISTORY_NOTE
+    LAST_HISTORY_NOTE = ""
+    d = pd.Series(dtype=float)
+    h = pd.Series(dtype=float)
+    if yf is not None:
+        try:
+            daily = _dl_retry(ticker, period="10y", interval="1d",
+                              auto_adjust=False, progress=False)
+            d = _close_series(daily)
+        except Exception:
+            d = pd.Series(dtype=float)
+        try:
+            hourly = _dl_retry(ticker, period="60d", interval="60m",
+                               auto_adjust=False, progress=False)
+            h = _close_series(hourly)
+        except Exception:
+            h = pd.Series(dtype=float)
     if d.empty:
-        raise RuntimeError(f"No daily data returned for {ticker}.")
+        try:
+            import datafeed as _dfeed
+            _s, _note = _dfeed.daily_history(ticker)
+        except Exception:
+            _s, _note = None, "history fallback unavailable"
+        if _s is not None:
+            d = _s
+            LAST_HISTORY_NOTE = _note
+            print(f"[MH] history fallback for {ticker}: {len(d)} closes — {_note}",
+                  flush=True)
+    if d.empty:
+        raise RuntimeError(
+            f"No daily data for {ticker} from Yahoo OR the Finnhub fallback. "
+            f"Open '🔬 Diagnose price feeds' in My Portfolio to see which "
+            f"sources work from this server.")
     return d, h
 
 

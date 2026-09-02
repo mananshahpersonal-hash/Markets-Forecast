@@ -1715,7 +1715,12 @@ if simple:
     except Exception:
         pass
     st.header(f"{icon} {name}")
-    st.subheader(f"Right now: ${fmtp(spot)} {unit_tail}{move_txt}")
+    _hn = res.get("history_note") or ""
+    if _hn:
+        st.subheader(f"Right now: ${fmtp(spot)}{move_txt}")
+        st.warning(f"📡 {_hn}")
+    else:
+        st.subheader(f"Right now: ${fmtp(spot)} {unit_tail}{move_txt}")
 
     tf_map = {"Next few hours": "4 hours", "Tomorrow": "Next day",
               "Next week": "Next week"}
