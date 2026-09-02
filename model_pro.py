@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v62 · 2026-08-31 · horizon-specific outlook (copper radio visibly updates) + 📜 Track record with auto pass/fail grading"
+BUILD = "v66 · 2026-09-01 · learned event impacts from price history + ⚡ upcoming-events panel + 🚨 big-swing watch"
 
 warnings.filterwarnings("ignore")
 
@@ -1906,7 +1906,33 @@ def run_prediction(cfg: dict, asset_key: str = "copper",
     headlines = cf.fetch_news_headlines(cfg, query=profile["news_query"])
     news = (cf.score_headlines_llm(headlines, cfg, profile["name"])
             or cf.score_headlines_keyword(headlines, profile["bullish"],
-                                          profile["bearish"]))
+                                          profile["bearish"],
+                                          kind=profile.get("kind", "metal")))
+    # ---- news COVERAGE monitoring: a market-moving headline the scorer can't
+    # read must never fail silently again. Count what got scored, log what
+    # didn't (timestamped, per asset) so every gap becomes visible and fixable.
+    _scored_titles = {t for t, _ in news.headlines}
+    _unscored = [h for h in headlines if h not in _scored_titles]
+    news_coverage = (len(_scored_titles), len(headlines))
+    try:
+        print(f"[MH] news coverage {state_key}: scored "
+              f"{news_coverage[0]}/{news_coverage[1]} headlines", flush=True)
+        if _unscored:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            _up = STATE_DIR / "news_unscored.csv"
+            _new = not _up.exists()
+            with open(_up, "a", newline="") as _fh:
+                _w = csv.writer(_fh)
+                if _new:
+                    _w.writerow(["time", "asset", "headline"])
+                for _h in _unscored[:10]:
+                    _w.writerow([now.isoformat(), state_key, _h[:200]])
+            # cap the log at ~600 rows so it never grows unbounded
+            _rows = open(_up).read().splitlines()
+            if len(_rows) > 620:
+                open(_up, "w").write("\n".join([_rows[0]] + _rows[-600:]) + "\n")
+    except Exception:
+        pass
     scenarios = profile["scenarios"]
     scenario = scenarios.get(scenario_key) if scenario_key else None
     scen_score = scenario["score"] if scenario else 0.0
@@ -1914,6 +1940,29 @@ def run_prediction(cfg: dict, asset_key: str = "copper",
     combined_score = float(np.clip(news.score + scen_score, -1.0, 1.0))
 
     events = cf.build_event_calendar(now.date())
+    # ---- LEARNED event impact: replace hand-guessed multipliers with the
+    # asset's own measured history (how much did it really move on past FOMC
+    # days, CPI prints, Chile output days...). Only overrides when ≥3 past
+    # occurrences were measurable — no guessing.
+    _impacts = cf.measure_event_impacts(ret_d, [e.name for e in events])
+    for e in events:
+        if e.name in _impacts:
+            e.vol_mult = _impacts[e.name]["ratio"]
+    _upc = []
+    for e in events:
+        _days = (e.when - now).total_seconds() / 86400.0
+        if -0.5 <= _days <= 16:
+            _m = _impacts.get(e.name)
+            _upc.append({"name": e.name, "when": e.when.isoformat(),
+                         "days": round(_days, 1), "mult": round(e.vol_mult, 2),
+                         "note": e.note,
+                         "measured": ({"avg_pct": round(_m["avg_pct"], 2),
+                                       "n": _m["n"]} if _m else None)})
+    try:
+        print(f"[MH] events {state_key}: next16d="
+              f"{[(u['name'], u['days'], u['mult']) for u in _upc[:4]]}", flush=True)
+    except Exception:
+        pass
     upcoming = [e for e in events if e.when >= now][:8]
 
     # ---- LEARN: grade this asset's past predictions, get its calibration ----
@@ -2049,7 +2098,9 @@ def run_prediction(cfg: dict, asset_key: str = "copper",
         "ref_beta": ref_beta, "ref_label": profile["ref_label"],
         "daily": daily, "hourly": hourly if have_hourly else daily,
         "have_hourly": have_hourly, "ref_loaded": not ref.empty,
-        "news": news, "scenario": scenario, "combined_score": combined_score,
+        "news": news, "news_coverage": news_coverage,
+        "news_unscored": _unscored[:3], "upcoming_events": _upc,
+        "scenario": scenario, "combined_score": combined_score,
         "events": upcoming, "forecasts": forecasts, "backtests": backtests,
         "lgbm_used": any("lgbm" in hf.components for hf, _ in forecasts),
         "signals": signals, "headline_signal": headline,

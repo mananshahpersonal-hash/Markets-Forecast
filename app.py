@@ -1775,6 +1775,39 @@ if simple:
         except Exception:
             pass
 
+    # ---- ⚡ UPCOMING EVENTS: learned-from-history swing risk, warned early ----
+    _upe = res.get("upcoming_events") or []
+    if _upe:
+        _soon = [u for u in _upe if 0 <= u["days"] <= 3 and u["mult"] >= 1.25]
+        if _soon:
+            _s0 = _soon[0]
+            _sm = _s0.get("measured")
+            _stx = (f"on the last {_sm['n']} of these it moved avg "
+                    f"±{_sm['avg_pct']:.1f}% — about {_s0['mult']}× a normal day"
+                    if _sm else f"assumed ≈{_s0['mult']}× a normal day")
+            st.warning(f"🚨 **Big-swing watch:** {_s0['name']} lands in "
+                       f"**{_s0['days']:.0f} day(s)** — {_stx}. The ranges above "
+                       f"are already widened for it; be careful with tight stops "
+                       f"into that print.")
+        st.markdown("#### ⚡ Coming up — dates that have moved this before")
+        for u in _upe[:5]:
+            try:
+                _dtx = _dt.datetime.fromisoformat(u["when"]).strftime("%a %b %d")
+            except Exception:
+                _dtx = u["when"][:10]
+            _m = u.get("measured")
+            if _m:
+                _imp = (f"on the last **{_m['n']}** of these it moved avg "
+                        f"**±{_m['avg_pct']:.1f}%** (≈{u['mult']}× a normal day)")
+            else:
+                _imp = f"impact assumed ≈{u['mult']}× (not enough history to measure)"
+            st.markdown(f"- **{u['name']}** — {_dtx} ({u['days']:.0f}d away): {_imp}.")
+        st.caption("Impacts are **measured from this asset's own price history** "
+                   "(needs ≥3 past occurrences; otherwise the assumed figure is "
+                   "shown and labeled). Forecast ranges for any horizon that "
+                   "contains one of these dates are widened by that factor "
+                   "automatically. Monthly release dates are approximate.")
+
     # ---- 📜 TRACK RECORD: proof it's recorded + graded pass/fail ----
     st.markdown("#### 📜 Track record — is this thing any good?")
     try:
@@ -1800,6 +1833,41 @@ if simple:
                        f"once its target time passes, and the results below are that "
                        f"scorecard — nothing is quietly forgotten."))
         _evals = mp.read_recent_evals(asset_key, 10)
+        # ---- 🧠 what the grading has actually changed in the model ----
+        _bias = float(_cal.get("bias_per_day", 0.0))
+        _vol = float(_cal.get("vol_calib", 1.0))
+        _nadj = int(_cal.get("n_adjust", 0))
+        _hist = _cal.get("acc_history", [])
+        _learn_bits = []
+        if abs(_bias) > 1e-6:
+            _learn_bits.append(
+                f"aim nudged **{_bias*100:+.2f}%/day** "
+                f"({'it was under-shooting, now aims higher' if _bias > 0 else 'it was over-shooting, now aims lower'})")
+        if abs(_vol - 1.0) > 1e-3:
+            _learn_bits.append(
+                f"ranges {'widened' if _vol > 1 else 'narrowed'} to "
+                f"**{_vol:.0%}** of the raw width (so the quoted range is honest)")
+        _trend = ""
+        _accs = [h.get("dir_acc") for h in _hist if h.get("dir_acc") is not None]
+        if len(_accs) >= 2:
+            _d = (_accs[-1] - _accs[0]) * 100
+            _trend = (f" Direction accuracy has moved **{_d:+.0f} pts** since "
+                      f"grading began.")
+        if _learn_bits or _nadj:
+            st.markdown(_md(
+                f"🧠 **What the fails have changed so far:** "
+                + ("; ".join(_learn_bits) if _learn_bits else
+                   "no net adjustment needed yet")
+                + f" · **{_nadj}** automatic self-correction(s) applied."
+                + _trend))
+            st.caption("How the learning works: every graded miss adjusts two "
+                       "dials — the model's *aim* (a persistent lean the wrong "
+                       "way gets pulled back) and its *range width* (if reality "
+                       "keeps landing outside the quoted range, the range widens; "
+                       "if it's always inside, it tightens). Those dials feed "
+                       "straight into the next forecast. The *signal logic itself* "
+                       "(RSI, trend, MACD rules) is fixed on purpose — reweighting "
+                       "it on a handful of grades would be fitting to noise.")
         if _evals:
             _tr = []
             for g in _evals:
@@ -1907,7 +1975,34 @@ if simple:
 
     _news = res.get("news_items") or []
     if _news:
-        st.markdown("#### 📰 Latest news")
+        st.markdown("#### 📰 Latest news — and what the model made of it")
+        _nr = res.get("news")
+        try:
+            _ns = float(getattr(_nr, "score", None) if _nr is not None else None)
+        except Exception:
+            _ns = None
+        if _ns is not None:
+            _lean = ("**bullish**" if _ns > 0.1 else
+                     "**bearish**" if _ns < -0.1 else "**neutral**")
+            st.caption(f"The model read these headlines this run and scored them "
+                       f"{_lean} ({_ns:+.2f} on a −1…+1 scale). That score nudges "
+                       f"the forecast drift — strongest on the hours horizon, "
+                       f"fading toward the weekly one.")
+        _cov = res.get("news_coverage")
+        if _cov and _cov[1]:
+            _sc, _tot_h = _cov
+            if _sc == 0 and abs(res.get("spot", 0) / float(res.get("prev_close") or res.get("spot") or 1) - 1) > 0.015:
+                st.warning(f"⚠️ **Blind spot alert:** price moved >1.5% but the "
+                           f"model understood **0 of {_tot_h}** headlines this "
+                           f"run — whatever drove the move, it couldn't read it. "
+                           f"Read the headlines yourself before trusting the "
+                           f"forecast; the unread ones are logged so this gap "
+                           f"gets fixed.")
+            else:
+                st.caption(f"News coverage this run: understood **{_sc} of "
+                           f"{_tot_h}** headlines. Any it can't read are logged "
+                           f"(with time + asset) so gaps get fixed instead of "
+                           f"silently ignored.")
         for it in _news[:5]:
             title = it.get("title", "")
             link = it.get("link", "")
@@ -1915,7 +2010,7 @@ if simple:
                 st.markdown(f"- [{title}]({link})")
             else:
                 st.markdown(f"- {title}")
-        st.caption("Headlines move stocks in seconds — by the time news reaches "
+        st.caption("Headlines move markets in seconds — by the time news reaches "
                    "here it's usually already in the price. Use this to understand "
                    "*why* it's moving, not to beat the move.")
 

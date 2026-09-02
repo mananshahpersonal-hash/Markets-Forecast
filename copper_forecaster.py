@@ -374,6 +374,13 @@ def build_event_calendar(today: Optional[dt.date] = None) -> list[MarketEvent]:
         ev.append(MarketEvent(_first_friday(year, m).replace(hour=12, minute=30),
                               "US nonfarm payrolls", 1.2,
                               "Labor data steers Fed path and risk appetite."))
+        # Chile monthly copper output print ~ last day of month (the Sep 1
+        # 'output fell 9.4%' release is exactly this event)
+        _nx = dt.date(year + (m == 12), (m % 12) + 1, 1)
+        _ld = _nx - dt.timedelta(days=1)
+        ev.append(MarketEvent(dt.datetime(_ld.year, _ld.month, _ld.day, 13, 0),
+                              "Chile copper output print", 1.15,
+                              "Top producer's monthly output — supply surprises move metals."))
 
     # Keep only events from ~2 days ago onward (so a just-passed event can still
     # be reported), sorted chronologically.
@@ -390,6 +397,77 @@ def _first_friday(year: int, month: int) -> dt.datetime:
     return dt.datetime(d.year, d.month, d.day)
 
 
+# Decision days of past FOMC meetings — needed to MEASURE how much an asset
+# actually moved on Fed days, instead of guessing a multiplier.
+FOMC_2025 = ["2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18",
+             "2025-07-30", "2025-09-17", "2025-10-29", "2025-12-10"]
+
+
+def historical_event_dates(name: str, start: dt.date, end: dt.date) -> list:
+    """Past occurrences of a recurring event type inside [start, end], so its
+    real price impact can be measured from history. Monthly ones are the same
+    approximate day-of-month the calendar uses (labeled ≈ in the UI)."""
+    out = []
+    if "FOMC" in name:
+        for ds in FOMC_2025 + FOMC_2026:
+            d = dt.date.fromisoformat(ds)
+            if start <= d <= end:
+                out.append(d)
+        return out
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        if "payrolls" in name:
+            d = _first_friday(y, m).date()
+        elif "CPI" in name:
+            d = dt.date(y, m, 12)
+        elif "Chile" in name:
+            nxt = dt.date(y + (m == 12), (m % 12) + 1, 1)
+            d = nxt - dt.timedelta(days=1)          # last day of month
+        elif "PMI" in name or "ISM" in name:
+            d = dt.date(y, m, 1)
+        else:
+            d = None
+        if d and start <= d <= end:
+            out.append(d)
+        m += 1
+        if m == 13:
+            m, y = 1, y + 1
+    return out
+
+
+def measure_event_impacts(daily_returns, event_names: list) -> dict:
+    """LEARNED event impact: for each recurring event type, compare the asset's
+    average |move| on past occurrences of that event vs a normal day, using its
+    OWN price history. Returns {name: {'ratio','avg_pct','n'}}; an event with
+    fewer than 3 measurable past occurrences returns nothing (no guessing).
+    ratio is capped [1.0, 2.2] and replaces the hand-set vol multiplier."""
+    out = {}
+    try:
+        r = daily_returns.dropna()
+        if len(r) < 60:
+            return out
+        base = float(r.abs().median()) or 1e-9
+        idx_dates = {ts.date(): float(v) for ts, v in r.items()}
+        span0, span1 = min(idx_dates), max(idx_dates)
+        for name in set(event_names):
+            past = historical_event_dates(name, span0, span1)
+            vals = []
+            for d in past:
+                for off in (0, 1, 2):               # event day or next trading day
+                    v = idx_dates.get(d + dt.timedelta(days=off))
+                    if v is not None:
+                        vals.append(abs(v))
+                        break
+            if len(vals) >= 3:
+                avg = sum(vals) / len(vals)
+                out[name] = {"ratio": max(1.0, min(2.2, avg / base)),
+                             "avg_pct": avg * 100, "n": len(vals)}
+    except Exception:
+        pass
+    return out
+
+
+
 def events_in_window(events: list[MarketEvent], start: dt.datetime,
                      end: dt.datetime) -> list[MarketEvent]:
     return [e for e in events if start <= e.when <= end]
@@ -401,6 +479,35 @@ def events_in_window(events: list[MarketEvent], start: dt.datetime,
 
 # Transparent, auditable keyword map. Each phrase carries a weight; bullish
 # (price-up) is positive, bearish (price-down) is negative. Edit freely.
+# Data-print & macro phrasing shared by every metal. Substring-matched, so stems
+# catch tenses ("dollar strengthen" hits strengthens/strengthened). Signs are for
+# PRICE: supply falling is BULLISH even though the headline sounds negative —
+# this is exactly the class of headline (e.g. "Chile output fell 9.4%") the old
+# lexicon scored as zero.
+EXTRA_BULL = {
+    "output fell": 0.8, "output fall": 0.8, "output drop": 0.8,
+    "output decline": 0.8, "output slump": 0.8, "output down": 0.7,
+    "production fell": 0.8, "production fall": 0.8, "production drop": 0.8,
+    "production decline": 0.8, "production halt": 0.9, "lower output": 0.7,
+    "supply fell": 0.8, "supply drop": 0.8, "supply tighten": 0.8,
+    "supply squeeze": 0.8, "supply shortfall": 0.9, "deficit widen": 0.8,
+    "inventories fell": 0.7, "inventories fall": 0.7, "inventories drop": 0.7,
+    "inventories decline": 0.7, "inventory drawdown": 0.7,
+    "stockpiles fell": 0.7, "stockpiles drop": 0.7, "mine closure": 0.9,
+    "dollar weaken": 0.7, "dollar slip": 0.5, "dollar dip": 0.5,
+}
+EXTRA_BEAR = {
+    "output rose": 0.7, "output rise": 0.7, "output jump": 0.7,
+    "output surge": 0.8, "output rebound": 0.7, "record output": 0.8,
+    "record production": 0.8, "production rose": 0.7, "production rise": 0.7,
+    "production rebound": 0.7, "production recover": 0.7,
+    "supply rose": 0.7, "supply rise": 0.7, "supply increase": 0.7,
+    "supply improve": 0.6, "supply glut": 0.9, "squeeze eas": 0.6,
+    "inventories rose": 0.7, "inventories rise": 0.7, "inventories climb": 0.7,
+    "inventories improve": 0.6, "dollar strengthen": 0.7, "dollar rally": 0.6,
+    "dollar jump": 0.6,
+}
+
 BULLISH_TERMS = {
     "supply deficit": 1.0, "deficit": 0.6, "shortage": 0.9, "mine strike": 1.0,
     "strike": 0.6, "production cut": 0.9, "smelter cut": 0.9, "disruption": 0.7,
@@ -410,6 +517,7 @@ BULLISH_TERMS = {
     "data center": 0.5, "ai demand": 0.5, "energy transition": 0.4,
     "grid spending": 0.6, "electrification": 0.4, "flooding": 0.6,
     "blockade": 0.8, "protest": 0.5, "export ban": 0.9,
+    **EXTRA_BULL,
 }
 BEARISH_TERMS = {
     "surplus": 0.9, "oversupply": 0.9, "demand slump": 0.9, "recession": 0.9,
@@ -418,6 +526,7 @@ BEARISH_TERMS = {
     "destocking": 0.7, "inventory build": 0.7, "rising stockpiles": 0.7,
     "sell-off": 0.6, "selloff": 0.6, "ceasefire": 0.4, "de-escalation": 0.4,
     "production restart": 0.7, "mine reopens": 0.7, "substitution": 0.5,
+    **EXTRA_BEAR,
 }
 
 
@@ -483,14 +592,34 @@ def fetch_news_items(query: str, n: int = 6) -> list:
 
 
 def score_headlines_keyword(headlines: list[str], bullish: dict = None,
-                            bearish: dict = None) -> NewsResult:
+                            bearish: dict = None, kind: str = "metal") -> NewsResult:
     """Sum weighted keyword hits across headlines -> bounded score + vol bump.
-    Pass per-asset term dicts; defaults to the copper/metals base."""
+    Pass per-asset term dicts; defaults to the copper/metals base.
+    `kind` controls the co-occurrence sign logic:
+      metal/commodity : supply falling = price-BULLISH, demand falling = bearish
+      stock/equity    : the company's own numbers falling (revenue, sales,
+                        production, deliveries, guidance...) = BEARISH — the
+                        opposite sign, because for a company, less output is bad.
+    """
     bull = bullish if bullish is not None else BULLISH_TERMS
     bear = bearish if bearish is not None else BEARISH_TERMS
     contribs: list[tuple[str, float]] = []
     total = 0.0
     hits = 0
+    _FALL = ("fell", "fall", "drop", "declin", "slump", "plunge", "tumbl",
+             "shrank", "shrink", "slid", "cut ", "halt", "miss")
+    _RISE = ("rose", "rise", "climb", "jump", "surge", "rebound", "recover",
+             "grew", "expand", "record ", "beat")
+    _is_equity = kind in ("stock", "equity")
+    if _is_equity:
+        # Company-metric nouns: any of these falling is bad for the stock.
+        _METRIC = ("revenue", "sales", "profit", "earnings", "production",
+                   "deliveries", "shipments", "guidance", "margin",
+                   "subscriber", "bookings", "orders", "demand")
+    else:
+        _SUPPLY = ("output", "production", "mine supply", "supply", "inventor",
+                   "stockpile", "smelter")
+        _DEMAND = ("demand", "consumption", "orders")
     for h in headlines:
         low = h.lower()
         s = 0.0
@@ -500,6 +629,24 @@ def score_headlines_keyword(headlines: list[str], bullish: dict = None,
         for term, w in bear.items():
             if term in low:
                 s -= w
+        _has = lambda words: any(w in low for w in words)
+        if _is_equity:
+            if _has(_METRIC):
+                if _has(_FALL):
+                    s -= 0.8          # company metric falling → stock-bearish
+                elif _has(_RISE):
+                    s += 0.7
+        else:
+            if _has(_SUPPLY) and not _has(_DEMAND):
+                if _has(_FALL):
+                    s += 0.8          # supply falling → price-bullish
+                elif _has(_RISE):
+                    s -= 0.7
+            elif _has(_DEMAND):
+                if _has(_FALL):
+                    s -= 0.8
+                elif _has(_RISE):
+                    s += 0.7
         if s != 0.0:
             contribs.append((h, round(s, 2)))
             total += s
