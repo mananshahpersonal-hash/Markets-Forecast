@@ -61,7 +61,7 @@ import indicators  # classic technical indicators (EMA/RSI/MACD/Bollinger)
 # Bump this whenever app.py starts depending on new functions here. app.py
 # checks for the capabilities below and shows a friendly message if this file
 # is an older copy than app.py (the #1 cause of deploy errors).
-BUILD = "v61 · 2026-08-31 · crash-proof tax section (defensive key access) so partial uploads can't break it"
+BUILD = "v62 · 2026-08-31 · horizon-specific outlook (copper radio visibly updates) + 📜 Track record with auto pass/fail grading"
 
 warnings.filterwarnings("ignore")
 

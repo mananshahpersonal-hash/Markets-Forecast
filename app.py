@@ -1735,10 +1735,18 @@ if simple:
                    if _havenames else " Try again after the next refresh."))
 
     # ---- 1) the call, in one clear line ----
+    _hz = tf_map[tf]
+    _hf = by_name.get(_hz)                    # this horizon's actual forecast
+    try:
+        print(f"[MH] {asset_key} simple view: horizon={_hz}, "
+              f"plans={sorted(_plans.keys())}, forecasts={sorted(by_name.keys())}",
+              flush=True)
+    except Exception:
+        pass
     if _horizon_missing:
         pass                                    # message already shown above
     elif not plan or plan.get("direction") == "WAIT":
-        st.markdown("## 🤷 NOT SURE which way this goes")
+        st.markdown(f"## 🤷 NOT SURE which way this goes ({tf.lower()})")
         st.markdown("The signals don't agree enough to lean either way. When it's "
                     "unclear like this, the smart move is usually to **wait**.")
     else:
@@ -1747,10 +1755,85 @@ if simple:
         arrow = "📈 **UP**" if up else "📉 **DOWN**"
         strength = ("but only *barely* — almost a coin toss" if prob < 55
                     else "a *slight* lean" if prob < 60 else "a *stronger* lean")
-        st.markdown(f"## Leaning {arrow}")
+        st.markdown(f"## Leaning {arrow} — {tf.lower()}")
         st.progress(min(max((prob - 40) / 40, 0.02), 1.0),
                     text=f"about {prob:.0f}% odds it goes {'up' if up else 'down'} "
                          f"({strength})")
+    # Horizon-specific numbers so switching the radio VISIBLY changes content:
+    # each horizon has its own target and expected range.
+    if _hf is not None:
+        try:
+            _tgt = float(_hf.median[-1])
+            _lo, _hi = float(_hf.lo68[-1]), float(_hf.hi68[-1])
+            _when = _hf.times[-1]
+            _whens = _when.strftime("%a %b %d, %I:%M %p") if hasattr(_when, "strftime") else str(_when)
+            _dpct = (_tgt / spot - 1) * 100 if spot else 0.0
+            st.markdown(_md(
+                f"**{tf} outlook:** most likely around **${fmtp(_tgt)}** "
+                f"({_dpct:+.1f}% from now), typical range "
+                f"**${fmtp(_lo)} – ${fmtp(_hi)}**, as of **{_whens}**."))
+        except Exception:
+            pass
+
+    # ---- 📜 TRACK RECORD: proof it's recorded + graded pass/fail ----
+    st.markdown("#### 📜 Track record — is this thing any good?")
+    try:
+        _predp = mp._pred_log(asset_key)
+        _lastrun = None
+        if _predp.exists():
+            import csv as _csv
+            _prows = list(_csv.DictReader(open(_predp)))
+            if _prows:
+                _lastrun = _prows[-1].get("run_time", "")[:16].replace("T", " ")
+        _pend = mp._count_pending(asset_key)
+        _cal = mp.load_calibration(asset_key)
+        _ok, _tot = int(_cal.get("dir_ok", 0)), int(_cal.get("dir_tot", 0))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Recorded forecasts", f"{len(_prows) if _predp.exists() else 0}")
+        c2.metric("Awaiting grading", f"{_pend}")
+        c3.metric("Direction accuracy",
+                  f"{_ok/_tot*100:.0f}% ({_ok}/{_tot})" if _tot else "no grades yet")
+        if _lastrun:
+            st.caption(_md(f"✍️ Every forecast (all horizons) is **saved automatically** "
+                       f"when the model runs — latest saved **{_lastrun}** at spot "
+                       f"${fmtp(spot)}. Each one is graded **pass/fail** on its own "
+                       f"once its target time passes, and the results below are that "
+                       f"scorecard — nothing is quietly forgotten."))
+        _evals = mp.read_recent_evals(asset_key, 10)
+        if _evals:
+            _tr = []
+            for g in _evals:
+                try:
+                    _anchor = float(g.get("anchor", 0) or 0)
+                    _pred = float(g.get("predicted", 0) or 0)
+                    _act = float(g.get("actual", 0) or 0)
+                    _pdir = "UP" if _pred >= _anchor else "DOWN"
+                    _adir = "UP" if _act >= _anchor else "DOWN"
+                    _pass = str(g.get("correct", "")).strip() in ("1", "True", "true")
+                    _tr.append({
+                        "Made": str(g.get("made", ""))[:16].replace("T", " "),
+                        "Horizon": g.get("horizon", ""),
+                        "Called": _pdir, "Actual": _adir,
+                        "Predicted $": round(_pred, 2), "Real $": round(_act, 2),
+                        "Result": "✅ PASS" if _pass else "❌ FAIL"})
+                except Exception:
+                    continue
+            if _tr:
+                st.dataframe(pd.DataFrame(_tr), width='stretch', hide_index=True,
+                             column_config={
+                                 "Predicted $": st.column_config.NumberColumn(format="$%.2f"),
+                                 "Real $": st.column_config.NumberColumn(format="$%.2f")})
+                st.caption("PASS = the up/down call matched what actually happened "
+                           "by the target time; FAIL = it didn't. Graded "
+                           "automatically — no cherry-picking.")
+        else:
+            st.info("No graded results yet for this asset — forecasts are being "
+                    "recorded now, and grades appear automatically once each "
+                    "forecast's target time passes (hours for the short horizon, "
+                    "a week for the weekly one). Check back after the next "
+                    "target passes.")
+    except Exception as _te:
+        st.caption(f"Track record unavailable this run ({str(_te)[:60]}).")
 
     # ---- 2) WHY — the signals in plain words ----
     st.markdown("#### 🔎 Why")
